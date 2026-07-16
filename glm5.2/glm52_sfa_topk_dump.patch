@@ -1,0 +1,86 @@
+diff --git a/vllm_ascend/attention/sfa_v1.py b/vllm_ascend/attention/sfa_v1.py
+index 4c29533..1111111 100644
+--- a/vllm_ascend/attention/sfa_v1.py
++++ b/vllm_ascend/attention/sfa_v1.py
+@@ -1,4 +1,5 @@
+ from dataclasses import dataclass
++import os
+ from typing import TYPE_CHECKING, TypeVar
+ 
+ import scipy  # type: ignore
+@@ -48,6 +49,62 @@ if TYPE_CHECKING:
+ # token count limits within bmm_transpose operator
+ BMM_TRANS_MAX_SUPPORTED_TOKENS = 1024
+ 
++_TOPK_DUMP_COUNT = 0
++
++
++def _dump_fresh_topk_indices(
++    topk_indices: torch.Tensor,
++    layer_name: str | None,
++    tp_rank: int,
++) -> None:
++    """Dump fresh DecodeOnly Top-K indices."""
++    if tp_rank != int(os.getenv("GLM52_TOPK_TP_RANK", "0")):
++        return
++
++    layer_name = layer_name or "unknown_layer"
++    layer_filter = os.getenv("GLM52_TOPK_LAYER", "")
++    if layer_filter and layer_filter not in layer_name:
++        return
++
++    global _TOPK_DUMP_COUNT
++    dump_index = _TOPK_DUMP_COUNT
++    _TOPK_DUMP_COUNT += 1
++
++    value = topk_indices.detach()
++    max_tokens = int(os.getenv("GLM52_TOPK_TOKENS", "1"))
++    max_heads = int(os.getenv("GLM52_TOPK_HEADS", "4"))
++    max_k = int(os.getenv("GLM52_TOPK_K", "2048"))
++    if max_tokens > 0:
++        value = value[:max_tokens]
++    if max_heads > 0 and value.dim() >= 3:
++        value = value[:, :max_heads]
++    if max_k > 0:
++        value = value[..., :max_k]
++    value = value.to(device="cpu", non_blocking=False)
++
++    dump_dir = os.getenv("GLM52_TOPK_DIR", "data")
++    os.makedirs(dump_dir, exist_ok=True)
++    safe_layer = "".join(char if char.isalnum() or char in "._-" else "_" for char in layer_name)
++    filename = (
++        f"topk_decode_pid{os.getpid()}_tp{tp_rank}_{safe_layer}_"
++        f"dump{dump_index:06d}.pt"
++    )
++    path = os.path.join(dump_dir, filename)
++    temporary_path = f"{path}.tmp"
++    torch.save(
++        {
++            "topk_indices": value,
++            "layer_name": layer_name,
++            "dump_index": dump_index,
++            "pid": os.getpid(),
++            "tp_rank": tp_rank,
++        },
++        temporary_path,
++    )
++    os.replace(temporary_path, path)
++    if os.getenv("GLM52_TOPK_PRINT", "0") == "1":
++        logger.info("Dumped DecodeOnly Top-K indices to %s", path)
++
+ 
+ class AscendSFABackend(AttentionBackend):
+     accept_output_buffer: bool = True
+@@ -1378,6 +1435,12 @@ class AscendSFAImpl(MLAAttentionImpl):
+                 actual_seq_lengths_query=actual_seq_lengths_query,
+                 actual_seq_lengths_key=actual_seq_lengths_key,
+             )
++            if attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
++                _dump_fresh_topk_indices(
++                    topk_indices=topk_indices,
++                    layer_name=self.layer_name,
++                    tp_rank=self.tp_rank,
++                )
+             if not self.use_index_cache:
+                 self._update_indexcache_topk_indices(topk_indices)
+ 

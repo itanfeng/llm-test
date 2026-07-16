@@ -80,7 +80,6 @@ def configure_environment(topk_dir: Path) -> None:
         "VLLM_VERSION": "0.21.0",
         "VLLM_ENGINE_READY_TIMEOUT_S": "3600",
         "GLM52_TOPK_TP_RANK": "0",
-        "GLM52_TOPK_PRINT": "0",
     }
     for name, value in defaults.items():
         os.environ.setdefault(name, value)

@@ -1,5 +1,5 @@
 diff --git a/vllm_ascend/device/device_op.py b/vllm_ascend/device/device_op.py
-index 992c02491..659c76c26 100644
+index 992c02491..5dd6a166b 100644
 --- a/vllm_ascend/device/device_op.py
 +++ b/vllm_ascend/device/device_op.py
 @@ -15,6 +15,7 @@
@@ -10,12 +10,15 @@ index 992c02491..659c76c26 100644
  from typing import Any
  
  import torch
-@@ -33,6 +34,62 @@ from vllm_ascend.quantization.quant_type import QuantType
+@@ -33,6 +34,73 @@ from vllm_ascend.quantization.quant_type import QuantType
  from vllm_ascend.utils import AscendDeviceType, get_ascend_device_type
  
  
 +_LIGHTNING_DUMP_COUNT = 0
 +_LIGHTNING_DUMP_LAYERS = {3, 7, 11, 35, 39, 43, 67, 71, 75}
++_LIGHTNING_DUMP_SEEN = set()
++
++print(f"[GLM52_DUMP] patch loaded: {__file__}", flush=True)
 +
 +
 +def _dump_lightning_indexer_call(
@@ -29,11 +32,18 @@ index 992c02491..659c76c26 100644
 +    """Save one complete DecodeOnly lightning-indexer invocation."""
 +    if sfa_impl.tp_rank != int(os.getenv("GLM52_TOPK_TP_RANK", "0")):
 +        return
-+    if getattr(attn_metadata.attn_state, "name", "") != "DecodeOnly":
-+        return
 +
 +    layer_name = sfa_impl.layer_name or "unknown_layer"
-+    if not any(f".layers.{index}." in f".{layer_name}." for index in _LIGHTNING_DUMP_LAYERS):
++    state_name = getattr(attn_metadata.attn_state, "name", str(attn_metadata.attn_state))
++    selected = any(f".layers.{index}." in f".{layer_name}." for index in _LIGHTNING_DUMP_LAYERS)
++    seen_key = (layer_name, state_name)
++    if seen_key not in _LIGHTNING_DUMP_SEEN:
++        _LIGHTNING_DUMP_SEEN.add(seen_key)
++        print(
++            f"[GLM52_DUMP] hook: layer={layer_name} state={state_name} selected={selected}",
++            flush=True,
++        )
++    if state_name != "DecodeOnly" or not selected:
 +        return
 +
 +    def to_cpu(value):
@@ -68,12 +78,13 @@ index 992c02491..659c76c26 100644
 +        temporary_path,
 +    )
 +    os.replace(temporary_path, path)
++    print(f"[GLM52_DUMP] saved: {path} layer={layer_name} dump_index={dump_index}", flush=True)
 +
 +
  class BaseDeviceAdaptor:
      @classmethod
      def reshape_and_cache(cls, key, value, key_cache, value_cache, slot_mapping):
-@@ -383,12 +440,16 @@ class BaseDeviceAdaptor:
+@@ -383,12 +451,16 @@ class BaseDeviceAdaptor:
              assert q_li_scale is not None
              assert q_li_shape_ori is not None
              weights = weights.to(torch.float16)
@@ -94,7 +105,7 @@ index 992c02491..659c76c26 100644
                  actual_seq_lengths_query=actual_seq_lengths_query,
                  actual_seq_lengths_key=actual_seq_lengths_key,
                  block_table=attn_metadata.block_table,
-@@ -399,8 +460,18 @@ class BaseDeviceAdaptor:
+@@ -399,8 +471,18 @@ class BaseDeviceAdaptor:
                  sparse_count=2048,
                  sparse_mode=3,
              )
@@ -114,7 +125,7 @@ index 992c02491..659c76c26 100644
                  query=q_li,
                  key=kv_cache[2],
                  weights=weights,
-@@ -412,8 +483,12 @@ class BaseDeviceAdaptor:
+@@ -412,8 +494,12 @@ class BaseDeviceAdaptor:
                  sparse_count=2048,
                  sparse_mode=3,
              )
@@ -128,7 +139,7 @@ index 992c02491..659c76c26 100644
                  query=q_li,
                  key=kv_cache[2],
                  weights=weights,
-@@ -425,6 +500,21 @@ class BaseDeviceAdaptor:
+@@ -425,6 +511,21 @@ class BaseDeviceAdaptor:
                  sparse_count=2048,
                  sparse_mode=3,
              )
@@ -150,7 +161,7 @@ index 992c02491..659c76c26 100644
          return topk_indices
  
      @staticmethod
-@@ -1437,8 +1527,18 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
+@@ -1437,8 +1538,18 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
                      sparse_count=2048,
                      sparse_mode=3,
                  )
@@ -170,7 +181,7 @@ index 992c02491..659c76c26 100644
                      query=q_li.view(q_li_shape_ori),
                      key=kv_cache[1],
                      weights=weights,
-@@ -1450,8 +1550,12 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
+@@ -1450,8 +1561,12 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
                      sparse_count=2048,
                      sparse_mode=3,
                  )
@@ -184,7 +195,7 @@ index 992c02491..659c76c26 100644
                  query=q_li,
                  key=kv_cache[2],
                  weights=weights,
-@@ -1463,6 +1567,21 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
+@@ -1463,6 +1578,21 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
                  sparse_count=2048,
                  sparse_mode=3,
              )

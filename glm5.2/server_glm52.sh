@@ -48,9 +48,6 @@ export GLM52_TOPK_DIR="$TOPK_DIR"
 # 默认只让 TP rank 0 写文件，避免所有 rank 同时 dump
 export GLM52_TOPK_TP_RANK="${GLM52_TOPK_TP_RANK:-0}"
 
-# 是否在终端打印 dump 信息
-export GLM52_TOPK_PRINT="${GLM52_TOPK_PRINT:-0}"
-
 mkdir -p "$TOPK_DIR"
 
 # =========================

@@ -41,6 +41,10 @@ complete `inputs`, complete `outputs`, scalar `attrs`, `layer_name`, `dump_index
 index keeps increasing during the worker lifetime. Neither online nor offline runs
 delete `.pt` files by default.
 
+The patched worker prints its loaded source path once, reports the first hook call
+for each layer/state pair, and prints every successfully saved `.pt` path. These
+messages use the `[GLM52_DUMP]` prefix in the server or offline log.
+
 Useful overrides include `MODEL_PATH`, `PORT`, `MAX_TOKENS`, and `GLM52_TOPK_DIR`.
 
 Patch operations are idempotent: applying an already-applied patch or reversing an

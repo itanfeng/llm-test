@@ -39,7 +39,7 @@ change to their own directory first, so this resolves to
 worker lifetime. Neither the service script nor the sender deletes `.pt` files.
 
 Useful overrides include `MODEL_PATH`, `PORT`, `PROMPT`, `MAX_TOKENS`,
-`GLM52_TOPK_DIR`, `GLM52_TOPK_HEADS=0` (all heads), `GLM52_TOPK_K=0` (all K), and
+`GLM52_TOPK_DIR`, `GLM52_TOPK_HEADS=0` (all heads), and
 `GLM52_TOPK_LAYER=<layer-name-substring>`.
 
 Patch operations are idempotent: applying an already-applied patch or reversing an

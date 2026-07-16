@@ -48,9 +48,6 @@ export GLM52_TOPK_DIR="$TOPK_DIR"
 # dump 前多少个 decode token
 export GLM52_TOPK_TOKENS="${GLM52_TOPK_TOKENS:-1}"
 
-# dump 的 Top-K 数量
-export GLM52_TOPK_K="${GLM52_TOPK_K:-2048}"
-
 # 默认只让 TP rank 0 写文件，避免所有 rank 同时 dump
 export GLM52_TOPK_TP_RANK="${GLM52_TOPK_TP_RANK:-0}"
 
@@ -79,7 +76,6 @@ echo "Max batched tokens:    $MAX_NUM_BATCHED_TOKENS"
 echo "Execution mode:        eager"
 echo "Top-K dump directory:  $TOPK_DIR"
 echo "Top-K dump tokens:     $GLM52_TOPK_TOKENS"
-echo "Top-K K:               $GLM52_TOPK_K"
 echo "Top-K TP rank:         $GLM52_TOPK_TP_RANK"
 echo "Log file:              $LOG_FILE"
 echo "========================================"

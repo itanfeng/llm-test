@@ -81,7 +81,6 @@ def configure_environment(topk_dir: Path) -> None:
         "VLLM_ENGINE_READY_TIMEOUT_S": "3600",
         "GLM52_TOPK_TOKENS": "1",
         "GLM52_TOPK_HEADS": "4",
-        "GLM52_TOPK_K": "2048",
         "GLM52_TOPK_TP_RANK": "0",
         "GLM52_TOPK_PRINT": "0",
     }

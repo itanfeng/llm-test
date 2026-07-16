@@ -8,7 +8,7 @@ index 4c29533..1111111 100644
  from typing import TYPE_CHECKING, TypeVar
  
  import scipy  # type: ignore
-@@ -48,6 +49,62 @@ if TYPE_CHECKING:
+@@ -48,6 +49,59 @@ if TYPE_CHECKING:
  # token count limits within bmm_transpose operator
  BMM_TRANS_MAX_SUPPORTED_TOKENS = 1024
  
@@ -36,13 +36,10 @@ index 4c29533..1111111 100644
 +    value = topk_indices.detach()
 +    max_tokens = int(os.getenv("GLM52_TOPK_TOKENS", "1"))
 +    max_heads = int(os.getenv("GLM52_TOPK_HEADS", "4"))
-+    max_k = int(os.getenv("GLM52_TOPK_K", "2048"))
 +    if max_tokens > 0:
 +        value = value[:max_tokens]
 +    if max_heads > 0 and value.dim() >= 3:
 +        value = value[:, :max_heads]
-+    if max_k > 0:
-+        value = value[..., :max_k]
 +    value = value.to(device="cpu", non_blocking=False)
 +
 +    dump_dir = os.getenv("GLM52_TOPK_DIR", "data")
@@ -71,7 +68,7 @@ index 4c29533..1111111 100644
  
  class AscendSFABackend(AttentionBackend):
      accept_output_buffer: bool = True
-@@ -1378,6 +1435,12 @@ class AscendSFAImpl(MLAAttentionImpl):
+@@ -1378,6 +1432,12 @@ class AscendSFAImpl(MLAAttentionImpl):
                  actual_seq_lengths_query=actual_seq_lengths_query,
                  actual_seq_lengths_key=actual_seq_lengths_key,
              )

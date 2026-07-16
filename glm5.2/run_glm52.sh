@@ -26,7 +26,7 @@ export GLM52_TOPK_PRINT="${GLM52_TOPK_PRINT:-0}"
 
 mkdir -p "$TOPK_DIR"
 
-echo "Starting GLM-5.2; dump directory: $TOPK_DIR"
+echo "Starting GLM-5.2 service on 0.0.0.0:$PORT"
 exec vllm serve "$MODEL_PATH" \
     --host 0.0.0.0 \
     --port "$PORT" \

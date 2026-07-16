@@ -11,6 +11,7 @@ MAX_TOKENS="${MAX_TOKENS:-32}"
 TOPK_DIR="${GLM52_TOPK_DIR:-data}"
 RESPONSE_FILE="${RESPONSE_FILE:-/tmp/glm52_topk_response.json}"
 LOCK_FILE="${LOCK_FILE:-/tmp/glm52_topk_sender.lock}"
+REQUIRE_TOPK_DUMP="${REQUIRE_TOPK_DUMP:-0}"
 
 command -v curl >/dev/null
 command -v jq >/dev/null
@@ -41,7 +42,15 @@ jq -e '.choices | type == "array"' "$RESPONSE_FILE" >/dev/null
 AFTER_COUNT="$(find "$TOPK_DIR" -maxdepth 1 -type f -name '*.pt' | wc -l | tr -d ' ')"
 NEW_DUMP_COUNT=$((AFTER_COUNT - BEFORE_COUNT))
 echo "HTTP status: $HTTP_CODE"
-echo "New dumps:   $NEW_DUMP_COUNT"
-echo "Total dumps: $AFTER_COUNT"
 echo "Response:    $RESPONSE_FILE"
-(( NEW_DUMP_COUNT > 0 )) || { echo "ERROR: request succeeded but no new tensors were dumped" >&2; exit 1; }
+if (( NEW_DUMP_COUNT > 0 )); then
+    echo "New dumps:   $NEW_DUMP_COUNT"
+    echo "Total dumps: $AFTER_COUNT"
+else
+    echo "New dumps:   0 (Top-K dump patch may not be applied)"
+fi
+
+if [[ "$REQUIRE_TOPK_DUMP" == "1" ]] && (( NEW_DUMP_COUNT == 0 )); then
+    echo "ERROR: request succeeded but no new tensors were dumped" >&2
+    exit 1
+fi

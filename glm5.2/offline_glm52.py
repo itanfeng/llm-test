@@ -148,11 +148,16 @@ def main() -> None:
     # Import only after Ascend/vLLM environment variables have been configured.
     from vllm import LLM, SamplingParams
 
-    dp_size = int(env("DP_SIZE", "2"))
-    tp_size = int(env("TP_SIZE", "8"))
+    dp_size = int(env("OFFLINE_DP_SIZE", "1"))
+    tp_size = int(env("TP_SIZE", "16"))
     max_model_len = int(env("MAX_MODEL_LEN", "72000"))
     max_num_seqs = int(env("MAX_NUM_SEQS", "16"))
     max_num_batched_tokens = int(env("MAX_NUM_BATCHED_TOKENS", "10240"))
+    if dp_size != 1:
+        raise ValueError(
+            "offline LLM single-process mode requires OFFLINE_DP_SIZE=1; "
+            "use server_glm52.sh for data parallel inference"
+        )
 
     print("=" * 64)
     print("Starting GLM-5.2 offline engine")

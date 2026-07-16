@@ -32,9 +32,9 @@ It waits for every non-streaming response and writes results to
 The HTTP test succeeds both with and without the dump patch. When the patch is
 active, the sender also reports how many new dump files were produced. Set
 `REQUIRE_TOPK_DUMP=1` when the test must fail unless a new dump is generated.
-Tensor files are retained in the relative directory `data` by default. The scripts
-change to their own directory first, so this resolves to
-`lightning_indexer_certified_cached/data`. Each `.pt` contains `topk_indices`, `layer_name`,
+Tensor files are retained in the script-relative directory `pt` by default, which
+resolves to `/data/tf/llm-test/glm5.2/pt` on the server. Each `.pt` contains
+`topk_indices`, `layer_name`,
 `dump_index`, `pid`, and `tp_rank`. The file index keeps increasing during the
 worker lifetime. Neither the service script nor the sender deletes `.pt` files.
 
@@ -59,8 +59,10 @@ engine. The wrapper log is `offline_glm52.log`:
 ./run_offline_glm52.sh
 ```
 
-It uses the same DP/TP, model length, batching, sampling, Ascend environment, and
-Top-K defaults as `server_glm52.sh` and `client_glm52.sh`. Use `--start-line` and
+It uses TP=16 and DP=1 because vLLM's single-process offline `LLM` API does not
+support DP greater than one. This still uses 16 NPUs, matching online DP=2/TP=8.
+Other model length, batching, sampling, Ascend, and Top-K defaults match the online
+scripts. Use `--start-line` and
 `--count` to select records, `--clear-dumps` to remove existing tensors, and
 `--require-dump` to fail when the patch does not produce a new tensor.
 ## dataset

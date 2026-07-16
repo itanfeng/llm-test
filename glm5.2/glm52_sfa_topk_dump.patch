@@ -42,7 +42,7 @@ index 4c29533..1111111 100644
 +        value = value[:, :max_heads]
 +    value = value.to(device="cpu", non_blocking=False)
 +
-+    dump_dir = os.getenv("GLM52_TOPK_DIR", "data")
++    dump_dir = os.getenv("GLM52_TOPK_DIR", "pt")
 +    os.makedirs(dump_dir, exist_ok=True)
 +    safe_layer = "".join(char if char.isalnum() or char in "._-" else "_" for char in layer_name)
 +    filename = (

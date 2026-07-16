@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
         default=Path(env("GLM52_TOPK_DIR", str(SCRIPT_DIR / "pt"))),
     )
     parser.add_argument("--start-line", type=int, default=int(env("START_LINE", "1")))
-    parser.add_argument("--count", type=int, default=int(env("COUNT", "0")))
+    parser.add_argument("--count", type=int, default=int(env("COUNT", "2")))
     parser.add_argument(
         "--decode-steps", type=int, default=int(env("DECODE_STEPS", "64"))
     )
@@ -150,7 +150,7 @@ def main() -> None:
 
     dp_size = int(env("DP_SIZE", "2"))
     tp_size = int(env("TP_SIZE", "8"))
-    max_model_len = int(env("MAX_MODEL_LEN", "75000"))
+    max_model_len = int(env("MAX_MODEL_LEN", "72000"))
     max_num_seqs = int(env("MAX_NUM_SEQS", "16"))
     max_num_batched_tokens = int(env("MAX_NUM_BATCHED_TOKENS", "10240"))
 

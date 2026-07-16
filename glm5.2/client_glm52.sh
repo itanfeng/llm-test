@@ -12,7 +12,7 @@ LOG_FILE="${LOG_FILE:-${SCRIPT_DIR}/online_glm52_client.log}"
 TOPK_DIR="${GLM52_TOPK_DIR:-${SCRIPT_DIR}/pt}"
 
 START_LINE="${START_LINE:-1}"
-COUNT="${COUNT:-0}"
+COUNT="${COUNT:-2}"
 DECODE_STEPS="${DECODE_STEPS:-64}"
 MAX_TOKENS="${MAX_TOKENS:-$((DECODE_STEPS + 1))}"
 TEMPERATURE="${TEMPERATURE:-0}"
@@ -38,16 +38,18 @@ before_count="$(find "$TOPK_DIR" -maxdepth 1 -type f -name '*.pt' | wc -l | tr -
 
 request_file="$(mktemp "${SCRIPT_DIR}/.request.XXXXXX.json")"
 response_file="$(mktemp "${SCRIPT_DIR}/.response.XXXXXX.json")"
-trap 'rm -f "$request_file" "$response_file"' EXIT
+record_file="$(mktemp "${SCRIPT_DIR}/.record.XXXXXX.json")"
+trap 'rm -f "$request_file" "$response_file" "$record_file"' EXIT
 
 sent=0
 while IFS= read -r record; do
     line_number=$((START_LINE + sent))
+    printf '%s\n' "$record" > "$record_file"
     jq -n \
-        --arg model "$MODEL" --argjson source "$record" \
+        --arg model "$MODEL" --slurpfile source "$record_file" \
         --argjson max_tokens "$MAX_TOKENS" --argjson temperature "$TEMPERATURE" \
         --argjson ignore_eos "$IGNORE_EOS" \
-        '{model:$model, messages:[{role:"user", content:$source.prompt}],
+        '{model:$model, messages:[{role:"user", content:$source[0].prompt}],
           max_tokens:$max_tokens, temperature:$temperature, top_p:1.0,
           seed:1024, ignore_eos:($ignore_eos == 1)}' > "$request_file"
 
@@ -60,10 +62,10 @@ while IFS= read -r record; do
         exit 1
     }
 
-    jq -cn --argjson line "$line_number" --argjson source "$record" \
+    jq -cn --argjson line "$line_number" --slurpfile source "$record_file" \
         --slurpfile response "$response_file" \
-        '{line:$line, instance_id:($source.instance_id // ""),
-          repo:($source.repo // ""), response:$response[0]}' >> "$RESP_FILE"
+        '{line:$line, instance_id:($source[0].instance_id // ""),
+          repo:($source[0].repo // ""), response:$response[0]}' >> "$RESP_FILE"
     sent=$((sent + 1))
     echo "[$sent] line=$line_number HTTP=$http_code"
 done < <(awk -v start="$START_LINE" -v count="$COUNT" \

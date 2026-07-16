@@ -20,7 +20,7 @@ In another shell/container, run:
 
 The client reads the `prompt` field from `swe_prompts.jsonl` and sends requests
 sequentially to the running online service. `COUNT` selects the number of prompt
-records, not the number of decode steps. By default it sends all prompts and requests
+records, not the number of decode steps. By default it sends two prompts and requests
 65 output tokens per prompt with EOS ignored, producing 64 calls through the patched
 `DecodeOnly` path. Existing dumps are preserved by default; set
 `CLEAR_TOPK_DUMPS=1` to remove old `.pt` and `.tmp` files first. Override generation

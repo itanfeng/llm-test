@@ -15,7 +15,7 @@ index 992c02491..5dd6a166b 100644
  
  
 +_LIGHTNING_DUMP_COUNT = 0
-+_LIGHTNING_DUMP_LAYERS = {3, 7, 11, 35, 39, 43, 67, 71, 75}
++_LIGHTNING_DUMP_LAYERS = {0, 1, 2, 6, 10, 14, 30, 34, 38, 66, 70, 74}
 +_LIGHTNING_DUMP_SEEN = set()
 +
 +print(f"[GLM52_DUMP] patch loaded: {__file__}", flush=True)

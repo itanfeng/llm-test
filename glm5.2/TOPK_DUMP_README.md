@@ -35,7 +35,9 @@ active, the sender also reports how many new dump files were produced. Set
 `REQUIRE_TOPK_DUMP=1` when the test must fail unless a new dump is generated.
 Tensor files are retained in the script-relative directory `pt` by default, which
 resolves to `/data/tf/llm-test/glm5.2/pt` on the server. Dumps are limited to
-0-based layers `3, 7, 11, 35, 39, 43, 67, 71, 75`. Each `.pt` contains `operator`,
+0-based layers `0, 1, 2, 6, 10, 14, 30, 34, 38, 66, 70, 74`, matching the actual
+online lightning indexer calls observed for this checkpoint. With the default 64
+decode steps, this produces `12 * 64 = 768` files. Each `.pt` contains `operator`,
 complete `inputs`, complete `outputs`, scalar `attrs`, `layer_name`, `dump_index`,
 `pid`, and `tp_rank`, so it can be used for standalone operator replay. The file
 index keeps increasing during the worker lifetime. Neither online nor offline runs

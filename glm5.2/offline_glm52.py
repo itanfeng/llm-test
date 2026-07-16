@@ -147,7 +147,7 @@ def main() -> None:
     from vllm import LLM, SamplingParams
 
     dp_size = int(env("OFFLINE_DP_SIZE", "1"))
-    tp_size = int(env("TP_SIZE", "8"))
+    tp_size = int(env("TP_SIZE", "16"))
     max_model_len = int(env("MAX_MODEL_LEN", "72000"))
     max_num_seqs = int(env("MAX_NUM_SEQS", "16"))
     max_num_batched_tokens = int(env("MAX_NUM_BATCHED_TOKENS", "10240"))

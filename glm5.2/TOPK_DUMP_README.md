@@ -60,10 +60,10 @@ engine. The wrapper log is `offline_glm52.log`:
 ./run_offline_glm52.sh
 ```
 
-It uses TP=8 and DP=1 because vLLM's single-process offline `LLM` API does not
-support DP greater than one, while TP=16 fails to initialize the 16-rank MoE/HCCL
-communication group in the current environment. Other model length, batching,
-sampling, Ascend, and Top-K defaults match the online scripts. Use `--start-line` and
+It uses TP=16 and DP=1 because vLLM's single-process offline `LLM` API does not
+support DP greater than one and TP=8 cannot fit the model weights on each NPU.
+Other model length, batching, sampling, Ascend, and Top-K defaults match the online
+scripts. Use `--start-line` and
 `--count` to select records, `--clear-dumps` to remove existing tensors, and
 `--require-dump` to fail when the patch does not produce a new tensor.
 ## dataset

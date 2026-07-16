@@ -1,83 +1,208 @@
-diff --git a/vllm_ascend/attention/sfa_v1.py b/vllm_ascend/attention/sfa_v1.py
-index 4c29533..1111111 100644
---- a/vllm_ascend/attention/sfa_v1.py
-+++ b/vllm_ascend/attention/sfa_v1.py
-@@ -1,4 +1,5 @@
- from dataclasses import dataclass
+diff --git a/vllm_ascend/device/device_op.py b/vllm_ascend/device/device_op.py
+index 992c02491..659c76c26 100644
+--- a/vllm_ascend/device/device_op.py
++++ b/vllm_ascend/device/device_op.py
+@@ -15,6 +15,7 @@
+ # limitations under the License.
+ # This file is a part of the vllm-ascend project.
+ #
 +import os
- from typing import TYPE_CHECKING, TypeVar
+ from typing import Any
  
- import scipy  # type: ignore
-@@ -48,6 +49,59 @@ if TYPE_CHECKING:
- # token count limits within bmm_transpose operator
- BMM_TRANS_MAX_SUPPORTED_TOKENS = 1024
+ import torch
+@@ -33,6 +34,62 @@ from vllm_ascend.quantization.quant_type import QuantType
+ from vllm_ascend.utils import AscendDeviceType, get_ascend_device_type
  
-+_TOPK_DUMP_COUNT = 0
+ 
++_LIGHTNING_DUMP_COUNT = 0
++_LIGHTNING_DUMP_LAYERS = {3, 7, 11, 35, 39, 43, 67, 71, 75}
 +
 +
-+def _dump_fresh_topk_indices(
-+    topk_indices: torch.Tensor,
-+    layer_name: str | None,
-+    tp_rank: int,
++def _dump_lightning_indexer_call(
++    sfa_impl,
++    attn_metadata,
++    operator: str,
++    inputs: dict[str, Any],
++    outputs: dict[str, Any],
++    attrs: dict[str, Any],
 +) -> None:
-+    """Dump fresh DecodeOnly Top-K indices."""
-+    if tp_rank != int(os.getenv("GLM52_TOPK_TP_RANK", "0")):
++    """Save one complete DecodeOnly lightning-indexer invocation."""
++    if sfa_impl.tp_rank != int(os.getenv("GLM52_TOPK_TP_RANK", "0")):
++        return
++    if getattr(attn_metadata.attn_state, "name", "") != "DecodeOnly":
 +        return
 +
-+    layer_name = layer_name or "unknown_layer"
-+    layer_filter = os.getenv("GLM52_TOPK_LAYER", "")
-+    if layer_filter and layer_filter not in layer_name:
++    layer_name = sfa_impl.layer_name or "unknown_layer"
++    if not any(f".layers.{index}." in f".{layer_name}." for index in _LIGHTNING_DUMP_LAYERS):
 +        return
 +
-+    global _TOPK_DUMP_COUNT
-+    dump_index = _TOPK_DUMP_COUNT
-+    _TOPK_DUMP_COUNT += 1
++    def to_cpu(value):
++        if isinstance(value, torch.Tensor):
++            return value.detach().to(device="cpu", non_blocking=False)
++        return value
 +
-+    value = topk_indices.detach()
-+    max_tokens = int(os.getenv("GLM52_TOPK_TOKENS", "1"))
-+    max_heads = int(os.getenv("GLM52_TOPK_HEADS", "4"))
-+    if max_tokens > 0:
-+        value = value[:max_tokens]
-+    if max_heads > 0 and value.dim() >= 3:
-+        value = value[:, :max_heads]
-+    value = value.to(device="cpu", non_blocking=False)
++    global _LIGHTNING_DUMP_COUNT
++    dump_index = _LIGHTNING_DUMP_COUNT
++    _LIGHTNING_DUMP_COUNT += 1
 +
 +    dump_dir = os.getenv("GLM52_TOPK_DIR", "pt")
 +    os.makedirs(dump_dir, exist_ok=True)
 +    safe_layer = "".join(char if char.isalnum() or char in "._-" else "_" for char in layer_name)
-+    filename = (
-+        f"topk_decode_pid{os.getpid()}_tp{tp_rank}_{safe_layer}_"
-+        f"dump{dump_index:06d}.pt"
++    path = os.path.join(
++        dump_dir,
++        f"lightning_indexer_pid{os.getpid()}_tp{sfa_impl.tp_rank}_"
++        f"{safe_layer}_dump{dump_index:06d}.pt",
 +    )
-+    path = os.path.join(dump_dir, filename)
 +    temporary_path = f"{path}.tmp"
 +    torch.save(
 +        {
-+            "topk_indices": value,
++            "operator": operator,
++            "inputs": {name: to_cpu(value) for name, value in inputs.items()},
++            "outputs": {name: to_cpu(value) for name, value in outputs.items()},
++            "attrs": attrs,
 +            "layer_name": layer_name,
 +            "dump_index": dump_index,
 +            "pid": os.getpid(),
-+            "tp_rank": tp_rank,
++            "tp_rank": sfa_impl.tp_rank,
 +        },
 +        temporary_path,
 +    )
 +    os.replace(temporary_path, path)
-+    if os.getenv("GLM52_TOPK_PRINT", "0") == "1":
-+        logger.info("Dumped DecodeOnly Top-K indices to %s", path)
 +
- 
- class AscendSFABackend(AttentionBackend):
-     accept_output_buffer: bool = True
-@@ -1378,6 +1432,12 @@ class AscendSFAImpl(MLAAttentionImpl):
++
+ class BaseDeviceAdaptor:
+     @classmethod
+     def reshape_and_cache(cls, key, value, key_cache, value_cache, slot_mapping):
+@@ -383,12 +440,16 @@ class BaseDeviceAdaptor:
+             assert q_li_scale is not None
+             assert q_li_shape_ori is not None
+             weights = weights.to(torch.float16)
++            query = q_li.view(q_li_shape_ori)
++            key = kv_cache[2]
++            query_dequant_scale = q_li_scale.view(q_li_shape_ori[:-1])
++            key_dequant_scale = kv_cache[3].squeeze(2)
+             topk_indices = torch.ops._C_ascend.npu_lightning_indexer_quant(
+-                query=q_li.view(q_li_shape_ori),
+-                key=kv_cache[2],
++                query=query,
++                key=key,
+                 weights=weights,
+-                query_dequant_scale=q_li_scale.view(q_li_shape_ori[:-1]),
+-                key_dequant_scale=kv_cache[3].squeeze(2),  # B S N D -> B S D
++                query_dequant_scale=query_dequant_scale,
++                key_dequant_scale=key_dequant_scale,
                  actual_seq_lengths_query=actual_seq_lengths_query,
                  actual_seq_lengths_key=actual_seq_lengths_key,
+                 block_table=attn_metadata.block_table,
+@@ -399,8 +460,18 @@ class BaseDeviceAdaptor:
+                 sparse_count=2048,
+                 sparse_mode=3,
              )
-+            if attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
-+                _dump_fresh_topk_indices(
-+                    topk_indices=topk_indices,
-+                    layer_name=self.layer_name,
-+                    tp_rank=self.tp_rank,
-+                )
-             if not self.use_index_cache:
-                 self._update_indexcache_topk_indices(topk_indices)
++            operator = "npu_lightning_indexer_quant"
++            inputs = {
++                "query": query,
++                "key": key,
++                "weights": weights,
++                "query_dequant_scale": query_dequant_scale,
++                "key_dequant_scale": key_dequant_scale,
++            }
++            outputs = {"topk_indices": topk_indices}
++            attrs = {"query_quant_mode": 0, "key_quant_mode": 0}
+         elif sfa_impl.use_torch_npu_lightning_indexer:
+-            topk_indices, _ = torch_npu.npu_lightning_indexer(
++            topk_indices, topk_scores = torch_npu.npu_lightning_indexer(
+                 query=q_li,
+                 key=kv_cache[2],
+                 weights=weights,
+@@ -412,8 +483,12 @@ class BaseDeviceAdaptor:
+                 sparse_count=2048,
+                 sparse_mode=3,
+             )
++            operator = "npu_lightning_indexer"
++            inputs = {"query": q_li, "key": kv_cache[2], "weights": weights}
++            outputs = {"topk_indices": topk_indices, "topk_scores": topk_scores}
++            attrs = {}
+         else:
+-            topk_indices, _ = torch.ops._C_ascend.npu_lightning_indexer(
++            topk_indices, topk_scores = torch.ops._C_ascend.npu_lightning_indexer(
+                 query=q_li,
+                 key=kv_cache[2],
+                 weights=weights,
+@@ -425,6 +500,21 @@ class BaseDeviceAdaptor:
+                 sparse_count=2048,
+                 sparse_mode=3,
+             )
++            operator = "npu_lightning_indexer"
++            inputs = {"query": q_li, "key": kv_cache[2], "weights": weights}
++            outputs = {"topk_indices": topk_indices, "topk_scores": topk_scores}
++            attrs = {}
++        inputs.update(
++            {
++                "actual_seq_lengths_query": actual_seq_lengths_query,
++                "actual_seq_lengths_key": actual_seq_lengths_key,
++                "block_table": attn_metadata.block_table,
++            }
++        )
++        attrs.update(
++            {"layout_query": "TND", "layout_key": "PA_BSND", "sparse_count": 2048, "sparse_mode": 3}
++        )
++        _dump_lightning_indexer_call(sfa_impl, attn_metadata, operator, inputs, outputs, attrs)
+         return topk_indices
  
+     @staticmethod
+@@ -1437,8 +1527,18 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
+                     sparse_count=2048,
+                     sparse_mode=3,
+                 )
++                operator = "npu_quant_lightning_indexer"
++                inputs = {
++                    "query": q_li.view(q_li_shape_ori),
++                    "key": kv_cache[1],
++                    "weights": weights,
++                    "query_dequant_scale": q_li_scale,
++                    "key_dequant_scale": key_dequant_scale,
++                }
++                outputs = {"topk_indices": topk_indices}
++                attrs = {"query_quant_mode": 0, "key_quant_mode": 0}
+             else:
+-                topk_indices, _ = torch_npu.npu_lightning_indexer(
++                topk_indices, topk_scores = torch_npu.npu_lightning_indexer(
+                     query=q_li.view(q_li_shape_ori),
+                     key=kv_cache[1],
+                     weights=weights,
+@@ -1450,8 +1550,12 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
+                     sparse_count=2048,
+                     sparse_mode=3,
+                 )
++                operator = "npu_lightning_indexer"
++                inputs = {"query": q_li.view(q_li_shape_ori), "key": kv_cache[1], "weights": weights}
++                outputs = {"topk_indices": topk_indices, "topk_scores": topk_scores}
++                attrs = {}
+         else:
+-            topk_indices, _ = torch_npu.npu_lightning_indexer(
++            topk_indices, topk_scores = torch_npu.npu_lightning_indexer(
+                 query=q_li,
+                 key=kv_cache[2],
+                 weights=weights,
+@@ -1463,6 +1567,21 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
+                 sparse_count=2048,
+                 sparse_mode=3,
+             )
++            operator = "npu_lightning_indexer"
++            inputs = {"query": q_li, "key": kv_cache[2], "weights": weights}
++            outputs = {"topk_indices": topk_indices, "topk_scores": topk_scores}
++            attrs = {}
++        inputs.update(
++            {
++                "actual_seq_lengths_query": actual_seq_lengths_query,
++                "actual_seq_lengths_key": actual_seq_lengths_key,
++                "block_table": attn_metadata.block_table,
++            }
++        )
++        attrs.update(
++            {"layout_query": "TND", "layout_key": "PA_BSND", "sparse_count": 2048, "sparse_mode": 3}
++        )
++        _dump_lightning_indexer_call(sfa_impl, attn_metadata, operator, inputs, outputs, attrs)
+         return topk_indices
+ 
+     @staticmethod

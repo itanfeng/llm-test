@@ -1,8 +1,9 @@
 # GLM-5.2 SFA Top-K tensor dump
 
-These files add a diagnostic dump to `vllm_ascend/attention/sfa_v1.py` on the
-`glm52-hi` branch. After the patch is applied, the hook always saves freshly computed
-Top-K indices from ordinary `DecodeOnly` calls. Only TP rank 0 writes by default.
+These files add a diagnostic dump at the actual lightning indexer calls in
+`vllm_ascend/device/device_op.py` on the `glm52-hi` branch. After the patch is
+applied, each `.pt` captures one complete `DecodeOnly` operator invocation. Only
+TP rank 0 writes by default.
 
 ## Use
 
@@ -20,7 +21,7 @@ In another shell/container, run:
 
 The client reads the `prompt` field from `swe_prompts.jsonl` and sends requests
 sequentially to the running online service. `COUNT` selects the number of prompt
-records, not the number of decode steps. By default it sends two prompts and requests
+records, not the number of decode steps. By default it sends one prompt and requests
 65 output tokens per prompt with EOS ignored, producing 64 calls through the patched
 `DecodeOnly` path. Existing dumps are preserved by default; set
 `CLEAR_TOPK_DUMPS=1` to remove old `.pt` and `.tmp` files first. Override generation
@@ -33,14 +34,14 @@ The HTTP test succeeds both with and without the dump patch. When the patch is
 active, the sender also reports how many new dump files were produced. Set
 `REQUIRE_TOPK_DUMP=1` when the test must fail unless a new dump is generated.
 Tensor files are retained in the script-relative directory `pt` by default, which
-resolves to `/data/tf/llm-test/glm5.2/pt` on the server. Each `.pt` contains
-`topk_indices`, `layer_name`,
-`dump_index`, `pid`, and `tp_rank`. The file index keeps increasing during the
-worker lifetime. Neither the service script nor the sender deletes `.pt` files.
+resolves to `/data/tf/llm-test/glm5.2/pt` on the server. Dumps are limited to
+0-based layers `3, 7, 11, 35, 39, 43, 67, 71, 75`. Each `.pt` contains `operator`,
+complete `inputs`, complete `outputs`, scalar `attrs`, `layer_name`, `dump_index`,
+`pid`, and `tp_rank`, so it can be used for standalone operator replay. The file
+index keeps increasing during the worker lifetime. Neither online nor offline runs
+delete `.pt` files by default.
 
-Useful overrides include `MODEL_PATH`, `PORT`, `PROMPT`, `MAX_TOKENS`,
-`GLM52_TOPK_DIR`, `GLM52_TOPK_HEADS=0` (all heads), and
-`GLM52_TOPK_LAYER=<layer-name-substring>`.
+Useful overrides include `MODEL_PATH`, `PORT`, `MAX_TOKENS`, and `GLM52_TOPK_DIR`.
 
 Patch operations are idempotent: applying an already-applied patch or reversing an
 already-reversed patch succeeds without changing files. To remove the source change:
@@ -59,10 +60,10 @@ engine. The wrapper log is `offline_glm52.log`:
 ./run_offline_glm52.sh
 ```
 
-It uses TP=16 and DP=1 because vLLM's single-process offline `LLM` API does not
-support DP greater than one. This still uses 16 NPUs, matching online DP=2/TP=8.
-Other model length, batching, sampling, Ascend, and Top-K defaults match the online
-scripts. Use `--start-line` and
+It uses TP=8 and DP=1 because vLLM's single-process offline `LLM` API does not
+support DP greater than one, while TP=16 fails to initialize the 16-rank MoE/HCCL
+communication group in the current environment. Other model length, batching,
+sampling, Ascend, and Top-K defaults match the online scripts. Use `--start-line` and
 `--count` to select records, `--clear-dumps` to remove existing tensors, and
 `--require-dump` to fail when the patch does not produce a new tensor.
 ## dataset

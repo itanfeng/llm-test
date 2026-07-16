@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
         default=Path(env("GLM52_TOPK_DIR", str(SCRIPT_DIR / "pt"))),
     )
     parser.add_argument("--start-line", type=int, default=int(env("START_LINE", "1")))
-    parser.add_argument("--count", type=int, default=int(env("COUNT", "2")))
+    parser.add_argument("--count", type=int, default=int(env("COUNT", "1")))
     parser.add_argument(
         "--decode-steps", type=int, default=int(env("DECODE_STEPS", "64"))
     )
@@ -79,8 +79,6 @@ def configure_environment(topk_dir: Path) -> None:
         "VLLM_ASCEND_ENABLE_MLAPO": "1",
         "VLLM_VERSION": "0.21.0",
         "VLLM_ENGINE_READY_TIMEOUT_S": "3600",
-        "GLM52_TOPK_TOKENS": "1",
-        "GLM52_TOPK_HEADS": "4",
         "GLM52_TOPK_TP_RANK": "0",
         "GLM52_TOPK_PRINT": "0",
     }
@@ -149,7 +147,7 @@ def main() -> None:
     from vllm import LLM, SamplingParams
 
     dp_size = int(env("OFFLINE_DP_SIZE", "1"))
-    tp_size = int(env("TP_SIZE", "16"))
+    tp_size = int(env("TP_SIZE", "8"))
     max_model_len = int(env("MAX_MODEL_LEN", "72000"))
     max_num_seqs = int(env("MAX_NUM_SEQS", "16"))
     max_num_batched_tokens = int(env("MAX_NUM_BATCHED_TOKENS", "10240"))

@@ -7,5 +7,5 @@ PROFILING_OUTPUT_DIR="${SCRIPT_DIR}/profiling/glm_base"
 OFFLINE_SCRIPT="${SCRIPT_DIR}/offline_glm51.py"
 
 msprof \
-    --application="bash \"${SCRIPT_DIR}/prof_glm.sh\" \"${PROFILING_OUTPUT_DIR}\" \"${OFFLINE_SCRIPT}\"" \
+    --application="bash ${SCRIPT_DIR}/prof_glm.sh ${PROFILING_OUTPUT_DIR} ${OFFLINE_SCRIPT}" \
     --output="${PROFILING_OUTPUT_DIR}"

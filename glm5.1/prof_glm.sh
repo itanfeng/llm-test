@@ -44,14 +44,13 @@ for num_samples in 4; do
         --max-num-seqs "${num_samples}" \
         --max-model-len "${MAX_MODEL_LEN}" \
         --max-tokens "${MAX_TOKENS}" \
+        --input-len "${INPUT_LEN}" \
         --output-dir "${OUTPUT_DIR}" \
         --tp "${TP}" \
         --gpu-memory-utilization 0.94 \
         --enable-prefetch-with-hidden-states \
         --use-lightning-indexer-hi-cached \
         2>&1 | tee "${log_file}"; then
-        # --input-len "${INPUT_LEN}" \
-        # > "${log_file}" 2>&1; then
         echo "Finished num_samples=${num_samples}"
     else
         echo "FAILED num_samples=${num_samples}, see ${log_file}"

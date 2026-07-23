@@ -386,48 +386,16 @@ def _decode_token_count(args: argparse.Namespace) -> int:
     return int(getattr(args, "max_tokens", getattr(args, "decode_tokens", 0)))
 
 
-def _auto_host_cache_tokens(
-    prompt_tokens: list[int],
-    max_tokens: int,
-    *,
-    same_prompt_batch: bool,
-) -> int:
-    token_lengths = [max(prompt_tokens)] if same_prompt_batch else prompt_tokens
-    return sum(
-        ((tokens + max(1, max_tokens) + _BLOCK_SIZE - 1) // _BLOCK_SIZE)
-        * _BLOCK_SIZE
-        for tokens in token_lengths
-    )
-
-
-def _host_cache_tokens(args: argparse.Namespace, prompt_tokens: list[int]) -> int:
-    if args.hisparse_full_backend != "host_memory":
-        return 0
-    if args.host_cache_tokens > 0:
-        return int(args.host_cache_tokens)
-    return _auto_host_cache_tokens(
-        prompt_tokens,
-        _decode_token_count(args),
-        same_prompt_batch=args.same_prompt_batch,
-    )
-
-
-def _hisparse_config(args: argparse.Namespace, host_cache_tokens: int) -> str:
+def _hisparse_config(args: argparse.Namespace) -> str:
     env_config = os.environ.get("HISPARSE_CONFIG")
     if env_config:
         return env_config
 
     config: dict[str, Any] = {"full_backend": args.hisparse_full_backend}
-    if args.hisparse_full_backend == "host_memory" and host_cache_tokens > 0:
-        config["host_cache_tokens"] = host_cache_tokens
     return json.dumps(config, separators=(",", ":"))
 
 
-def _llm_kwargs(
-    args: argparse.Namespace,
-    *,
-    host_cache_tokens: int,
-) -> dict[str, Any]:
+def _llm_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "model": args.model,
         "tokenizer_mode": _tokenizer_mode_for_model(args.model),
@@ -445,7 +413,7 @@ def _llm_kwargs(
             "recompute_scheduler_enable": False,
             "multistream_overlap_shared_expert": False,
             "enable_hisparse": True,
-            "hisparse_config": _hisparse_config(args, host_cache_tokens),
+            "hisparse_config": _hisparse_config(args),
             "enable_prefetch_with_hidden_states": args.enable_prefetch_with_hidden_states,
             "use_lightning_indexer_hi_cached": args.use_lightning_indexer_hi_cached,
         },
@@ -516,8 +484,6 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--max-num-batched-tokens must be >= 0")
     if args.cudagraph_capture_sizes != [args.max_num_seqs]:
         raise ValueError("--cudagraph-capture-sizes must equal --max-num-seqs")
-    if args.host_cache_tokens < 0:
-        raise ValueError("--host-cache-tokens must be >= 0")
     if args.max_layers is not None and args.max_layers <= 0:
         raise ValueError("--max-layers must be > 0")
     input_len = int(getattr(args, "input_len", 0) or 0)
@@ -596,12 +562,6 @@ def _add_common_args(parser: argparse.ArgumentParser, *, profiling: bool = False
         default=float(os.environ.get("PROF_GPU_MEMORY_UTILIZATION", "0.85")),
     )
     parser.add_argument(
-        "--host-cache-tokens",
-        type=int,
-        default=0,
-        help="0 auto-sizes host full-KV capacity from selected prompts",
-    )
-    parser.add_argument(
         "--hisparse-full-backend",
         choices=("host_memory", "device"),
         default="host_memory",
@@ -660,14 +620,13 @@ def main() -> int:
         trust_remote_code=True,
     )
     batch = _build_prompt_batch(tokenizer, args)
-    host_cache_tokens = _host_cache_tokens(args, batch.prompt_tokens)
 
     print(
         "=== HiSparse graph offline "
         f"tp={args.tp} num_samples={args.num_samples} "
         f"max_num_seqs={args.max_num_seqs} same_prompt_batch={args.same_prompt_batch} "
         f"capture_sizes={args.cudagraph_capture_sizes} "
-        f"prefix_cache=True host_cache_tokens={host_cache_tokens} ==="
+        "prefix_cache=True ==="
     )
     for idx, case in enumerate(batch.cases):
         print(
@@ -675,7 +634,12 @@ def main() -> int:
             f"gold={case.gold_answers}"
         )
 
-    llm = LLM(**_llm_kwargs(args, host_cache_tokens=host_cache_tokens))
+    llm = LLM(**_llm_kwargs(args))
+    llm.generate(
+        [batch.prompts[0]],
+        sampling_params=_greedy_sampling_params(1),
+        use_tqdm=False,
+    )
     outputs = llm.generate(
         batch.prompts,
         sampling_params=_greedy_sampling_params(_decode_token_count(args)),

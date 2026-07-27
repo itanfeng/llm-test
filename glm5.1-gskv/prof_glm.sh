@@ -48,6 +48,8 @@ for num_samples in 4; do
         --output-dir "${OUTPUT_DIR}" \
         --tp "${TP}" \
         --gpu-memory-utilization 0.94 \
+        --enable-prefetch-with-hidden-states \
+        --use-lightning-indexer-hi-cached \
         2>&1 | tee "${log_file}"; then
         echo "Finished num_samples=${num_samples}"
     else

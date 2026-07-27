@@ -17,7 +17,7 @@ if [[ $# -ne 2 ]]; then
 fi
 
 MODEL="/data/model/GLM-5.1-w8a8-reduced/"
-# MODEL="/data/model/GLM-5.1-w8a8/"
+#MODEL="/data/model/GLM-5.1-w8a8/"
 INPUT_LEN=0
 MAX_MODEL_LEN=68000
 MAX_TOKENS=64
@@ -46,7 +46,7 @@ for num_samples in 16; do
         --gpu-memory-utilization 0.94 \
         --enable-dual-batch \
         --enable-segment-sfa \
-        --enable-prefetch-with-hidden-states \
+        --no-enable-prefetch-with-hidden-states \
         2>&1 | tee "${log_file}"; then
         echo "Finished num_samples=${num_samples}"
     else

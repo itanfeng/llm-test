@@ -21,7 +21,7 @@ os.environ["USE_MULTI_GROUPS_KV_CACHE"] = "0"
 os.environ.setdefault("MASTER_PORT", str(29500 + random.randint(0, 2000)))
 os.environ["VLLM_LOGGING_LEVEL"] = "INFO"
 
-_DEFAULT_JSONL = "/data/datasets/longbench/data/multifieldqa_zh.jsonl"
+_DEFAULT_JSONL = "/data/datasets/longbench/data/longbench_narrativeqa_64k.jsonl"
 _DEFAULT_MODEL = "/data/model/GLM-5.1-W8A8/"
 _BLOCK_SIZE = 128
 _USER_BODY = (
@@ -391,7 +391,14 @@ def _hisparse_config(args: argparse.Namespace) -> str:
     if env_config:
         return env_config
 
-    config: dict[str, Any] = {"full_backend": args.hisparse_full_backend}
+    config: dict[str, Any] = {
+        "full_backend": args.hisparse_full_backend,
+        "enable_dual_batch": bool(args.enable_dual_batch),
+        "enable_prefetch_with_hidden_states": bool(
+            args.enable_prefetch_with_hidden_states
+        ),
+        "enable_segment_sfa": bool(args.enable_segment_sfa),
+    }
     return json.dumps(config, separators=(",", ":"))
 
 
@@ -414,7 +421,6 @@ def _llm_kwargs(args: argparse.Namespace) -> dict[str, Any]:
             "multistream_overlap_shared_expert": False,
             "enable_hisparse": True,
             "hisparse_config": _hisparse_config(args),
-            "enable_prefetch_with_hidden_states": args.enable_prefetch_with_hidden_states,
             "use_lightning_indexer_hi_cached": args.use_lightning_indexer_hi_cached,
         },
         "compilation_config": {
@@ -571,6 +577,18 @@ def _add_common_args(parser: argparse.ArgumentParser, *, profiling: bool = False
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Enable prefetch with hidden states for HiSparse",
+    )
+    parser.add_argument(
+        "--enable-dual-batch",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Split HiSparse decode into two row batches",
+    )
+    parser.add_argument(
+        "--enable-segment-sfa",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable segmented hit/miss SparseFlashAttention",
     )
     parser.add_argument(
         "--use-lightning-indexer-hi-cached",

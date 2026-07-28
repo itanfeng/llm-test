@@ -25,7 +25,7 @@ if (!file) {
   );
 }
 
-const keep = /mla_preprocess|LightningIndexer|AsuHbmIndexLookup|AsuKvGather|HiSparseFlashAttention|DaAttentionMerge|MoeGatingTopK|MoeDistributeDispatchV2|MoeDistributeCombineV2|GroupedMatmul|ScatterNd|UpdateMean|indexer|Rope|MatMul|LayerNorm|InplaceCopy|Cast|Muls|Adds|Subs|Clamp|FillScalar|AscendQuant/i;
+const keep = /mla_preprocess|LightningIndexer|AsuHbmIndexLookup|AsuHbmIndexMaintain|AsuKvGather|HiSparseFlashAttention|DaAttentionMerge|batch_matmul_transpose|MoeGatingTopK|MoeDistributeDispatchV2|MoeDistributeCombineV2|GroupedMatmul|ScatterNd|UpdateMean|indexer|Rope|MatMul|LayerNorm|InplaceCopy|Cast|Muls|Adds|Subs|Clamp|FillScalar|AscendQuant/i;
 const events = [];
 const namesByPidTid = new Map();
 const pidNames = new Map();
@@ -108,6 +108,7 @@ stream.on('end', () => {
   const prefetchCandidate = [...tids].sort((a,b)=>count(/LightningIndexerHiCached/,b)-count(/LightningIndexerHiCached/,a))[0];
   const prefetch = count(/LightningIndexerHiCached/, prefetchCandidate) > 0 ? prefetchCandidate : null;
   const gather = [...tids].sort((a,b)=>count(/AsuKvGather/,b)-count(/AsuKvGather/,a))[0];
+  const maintain = [...tids].sort((a,b)=>count(/AsuHbmIndexMaintain/,b)-count(/AsuHbmIndexMaintain/,a))[0];
   const mainMla = hw.filter(e=>e.tid===main && e.name==='mla_preprocess').sort((a,b)=>a.ts-b.ts);
   const taskCounts = new Map();
   for (const e of mainMla) taskCounts.set(e.task,(taskCounts.get(e.task)||0)+1);
@@ -156,7 +157,7 @@ stream.on('end', () => {
     ...stats(durations),
   })).sort((a,b)=>b.total-a.total).slice(0,30);
   const gatherEvents = window.filter(e=>e.tid===gather&&e.name==='AsuKvGather').sort((a,b)=>a.ts-b.ts);
-  const prefetchLookups = prefetch === null ? [] : window.filter(e=>e.tid===prefetch&&e.name==='AsuHbmIndexLookup').sort((a,b)=>a.ts-b.ts);
+  const prefetchLookups = prefetch === null ? [] : window.filter(e=>e.tid===prefetch&&/AsuHbmIndexLookup/.test(e.name)).sort((a,b)=>a.ts-b.ts);
   const prefetchGatherSet = new Set();
   let gatherCursor = 0;
   for (const lookup of prefetchLookups) {
@@ -193,10 +194,10 @@ stream.on('end', () => {
   const targetLayer = targetStep?.layers[timelineLayer-1];
   const timeline = !targetLayer ? [] : hw.filter(e=>e.ts>=targetLayer.start&&e.ts<targetLayer.end&&(
     e.name==='AsuKvGather'||e.name==='mla_preprocess'||e.name==='LightningIndexerHiCached'||
-    e.name==='AsuHbmIndexLookup'||/MoeGatingTopK|MoeDistributeDispatchV2|MoeDistributeCombineV2|GroupedMatmul/.test(e.name)
+    /AsuHbmIndexLookup|AsuHbmIndexMaintain|HiSparseFlashAttention|DaAttentionMerge|batch_matmul_transpose|MoeGatingTopK|MoeDistributeDispatchV2|MoeDistributeCombineV2|GroupedMatmul/.test(e.name)
   )).sort((a,b)=>a.ts-b.ts).map(e=>({name:e.name,stream:e.tid,task:e.task,rel:e.ts-targetLayer.start,dur:e.dur}));
   const topNames = prefetch === null ? [] : [...namesByPidTid].filter(([k])=>k.startsWith(`${pid}|${prefetch}|`)).map(([k,v])=>[k.split('|').slice(2).join('|'),v]).sort((a,b)=>b[1]-a[1]).slice(0,30);
-  const out={file,pid,pidName:pidNames.get(pid),streams:{main,prefetch,gather},layerTasks,stepCount:steps.length,
+  const out={file,pid,pidName:pidNames.get(pid),streams:{main,prefetch,gather,maintain},layerTasks,stepCount:steps.length,
     stableStep:stats(stable.map(s=>s.dur)),
     selectedSecondLast:selected?{dur:selected.dur,firstMoeLayer:selected.layers[firstKDense],layers:selected.layers}:null,
     aggregate:{dense:groupStats(dense),moe:groupStats(moe),firstMoeLayer:groupStats(firstMoeLayer)},

@@ -44,7 +44,6 @@ for num_samples in 16; do
         --output-dir "${OUTPUT_DIR}" \
         --tp "${TP}" \
         --gpu-memory-utilization 0.94 \
-        --enable-dual-batch \
         --enable-segment-sfa \
         --enable-prefetch-with-hidden-states \
         2>&1 | tee "${log_file}"; then

@@ -439,7 +439,7 @@ def _sampling_params(
     max_tokens: int,
     count: int | None = None,
     *,
-    temperature: float = 0.1,
+    temperature: float = 0.0,
     top_p: float = 1.0,
     seed_base: int | None = None,
 ) -> Any:

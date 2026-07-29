@@ -25,7 +25,7 @@ if (!file) {
   );
 }
 
-const keep = /mla_preprocess|LightningIndexer|AsuHbmIndexLookup|AsuHbmIndexMaintain|AsuKvGather|HiSparseFlashAttention|DaAttentionMerge|batch_matmul_transpose|MoeGatingTopK|MoeDistributeDispatchV2|MoeDistributeCombineV2|GroupedMatmul|ScatterNd|UpdateMean|indexer|Rope|MatMul|LayerNorm|InplaceCopy|Cast|Muls|Adds|Subs|Clamp|FillScalar|AscendQuant/i;
+const keep = /mla_(?:query_)?preprocess|LightningIndexer|AsuHbmIndexLookup|AsuHbmIndexMaintain|AsuKvGather|HiSparseFlashAttention|DaAttentionMerge|batch_matmul_transpose|MoeGatingTopK|MoeDistributeDispatchV2|MoeDistributeCombineV2|GroupedMatmul|ScatterNd|UpdateMean|indexer|Rope|MatMul|LayerNorm|InplaceCopy|Cast|Muls|Adds|Subs|Clamp|FillScalar|AscendQuant/i;
 const events = [];
 const namesByPidTid = new Map();
 const pidNames = new Map();
@@ -144,6 +144,9 @@ stream.on('end', () => {
   const windowStart=stable[0]?.start ?? -Infinity, windowEnd=stable.at(-1)?.end ?? Infinity;
   const window=hw.filter(e=>e.ts>=windowStart&&e.ts<windowEnd);
   const kstats=(name,tid)=>stats(window.filter(e=>e.name===name&&(tid===undefined||e.tid===tid)).map(e=>e.dur));
+  const kstatsRegex=(pattern,tid)=>stats(window.filter(
+    e=>pattern.test(e.name)&&(tid===undefined||e.tid===tid)
+  ).map(e=>e.dur));
   const prefetchKernelGroups = new Map();
   if (prefetch !== null) {
     for (const event of window.filter(e=>e.tid===prefetch)) {
@@ -193,15 +196,35 @@ stream.on('end', () => {
   const targetStep = steps.at(-timelineFromEnd);
   const targetLayer = targetStep?.layers[timelineLayer-1];
   const timeline = !targetLayer ? [] : hw.filter(e=>e.ts>=targetLayer.start&&e.ts<targetLayer.end&&(
-    e.name==='AsuKvGather'||e.name==='mla_preprocess'||e.name==='LightningIndexerHiCached'||
+    e.name==='AsuKvGather'||/^mla_(?:query_)?preprocess$/.test(e.name)||e.name==='LightningIndexerHiCached'||
     /AsuHbmIndexLookup|AsuHbmIndexMaintain|HiSparseFlashAttention|DaAttentionMerge|batch_matmul_transpose|MoeGatingTopK|MoeDistributeDispatchV2|MoeDistributeCombineV2|GroupedMatmul/.test(e.name)
   )).sort((a,b)=>a.ts-b.ts).map(e=>({name:e.name,stream:e.tid,task:e.task,rel:e.ts-targetLayer.start,dur:e.dur}));
   const topNames = prefetch === null ? [] : [...namesByPidTid].filter(([k])=>k.startsWith(`${pid}|${prefetch}|`)).map(([k,v])=>[k.split('|').slice(2).join('|'),v]).sort((a,b)=>b[1]-a[1]).slice(0,30);
   const out={file,pid,pidName:pidNames.get(pid),streams:{main,prefetch,gather,maintain},layerTasks,stepCount:steps.length,
     stableStep:stats(stable.map(s=>s.dur)),
+    stableStepHistory:stable.map((step,index)=>{
+      const anchoredLayerDuration=step.layers.reduce(
+        (total,layer)=>total+layer.lat,0
+      );
+      return {
+        fromEnd:stable.length-index,
+        start:step.start,
+        duration:step.dur,
+        anchoredLayerDuration,
+        stepRemainder:step.dur-anchoredLayerDuration,
+      };
+    }),
     selectedSecondLast:selected?{dur:selected.dur,firstMoeLayer:selected.layers[firstKDense],layers:selected.layers}:null,
     aggregate:{dense:groupStats(dense),moe:groupStats(moe),firstMoeLayer:groupStats(firstMoeLayer)},
-    kernels:{mainMla:kstats('mla_preprocess',main),prefetchMla:kstats('mla_preprocess',prefetch),prefetchIndexer:kstats('LightningIndexerHiCached',prefetch),prefetchLookup:kstats('AsuHbmIndexLookup',prefetch),allGather:kstats('AsuKvGather',gather)},
+    kernels:{
+      mainMla:kstats('mla_preprocess',main),
+      prefetchMla:kstatsRegex(/^mla_(?:query_)?preprocess$/,prefetch),
+      prefetchLegacyMla:kstats('mla_preprocess',prefetch),
+      prefetchQueryMla:kstats('mla_query_preprocess',prefetch),
+      prefetchIndexer:kstats('LightningIndexerHiCached',prefetch),
+      prefetchLookup:kstats('AsuHbmIndexLookup',prefetch),
+      allGather:kstats('AsuKvGather',gather),
+    },
     prefetchKernelStats,
     gatherStats:{main:stats(mainGathers.map(e=>e.dur)),prefetch:stats(prefetchGathers.map(e=>e.dur))},
     moeKernelStats,

@@ -41,6 +41,7 @@ if (!file || !Number.isInteger(numLayers) || numLayers < 2 ||
 
 const KEEP_EVENT = new RegExp([
   "mla_preprocess",
+  "mla_query_preprocess",
   "LightningIndexerHiCached",
   "AsuHbmIndexLookupOpt",
   "AsuHbmIndexLookup",
@@ -211,6 +212,9 @@ function summarizeRecords(records) {
     "indexerOverlapDispatch",
     "lookupOverlapGap",
     "lookupOverlapDispatch",
+    "lookupOverlapGmm1",
+    "lookupOverlapGmm2",
+    "lookupOverlapCombine",
     "gatherOverlapGap",
     "gatherOverlapDispatch",
     "gatherOverlapGmm1",
@@ -364,7 +368,7 @@ stream.on("end", () => {
         : intervalEvents.filter(event => event.tid === prefetchStream);
       const prefetchMla = selectFirst(
         prefetchEvents,
-        event => event.name === "mla_preprocess",
+        event => /^mla_(?:query_)?preprocess$/.test(event.name),
       );
       const prefetchIndexer = selectFirst(
         prefetchEvents,
@@ -418,6 +422,9 @@ stream.on("end", () => {
           gatingStart,
         ),
         lookupOverlapDispatch: overlapDuration(prefetchLookup, dispatch),
+        lookupOverlapGmm1: overlapDuration(prefetchLookup, gmm1),
+        lookupOverlapGmm2: overlapDuration(prefetchLookup, gmm2),
+        lookupOverlapCombine: overlapDuration(prefetchLookup, combine),
         gatherOverlapGap: intervalOverlap(
           prefetchGather,
           attentionEnd,

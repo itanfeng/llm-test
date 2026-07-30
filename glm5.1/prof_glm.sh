@@ -1,64 +1,37 @@
 #!/bin/bash
-# Run HiSparse synthetic GLM-5.1 profiling for multiple batch sizes and save
-# each run's output to a separate log file.
 
-# 修改位置：1. MAX_TOKENS由2048改为20， 相应MAX_MODEL_LEN改为66000
-# 2. 修改num_samples的循环范围为1（原为1 2 4 8）
-# 3. 进入容器 docker exec -it huanghongming bash
-# 4. 在当前目录运行 bash profiling.sh
-# profiling.sh 会将 msprof 数据和运行日志的共用输出目录作为第一个参数传入。
+set -euo pipefail
 
-
-set -uo pipefail
-
-if [[ $# -ne 2 ]]; then
-    echo "Usage: $0 <profiling-output-dir> <offline-script>" >&2
+if [[ $# -ne 5 ]]; then
+    echo "Usage: $0 <output-dir> <offline-script> <model-path> <base|prefetch> <batch-size>" >&2
     exit 2
 fi
 
-MODEL="/data/model/GLM-5.1-w8a8-reduced/"
-#MODEL="/data/model/GLM-5.1-w8a8/"
-INPUT_LEN=65536
-# MAX_MODEL_LEN=68000
-# MAX_TOKENS=2048
-MAX_MODEL_LEN=66000
-MAX_TOKENS=200
-TP=4
 OUTPUT_DIR="$1"
-PYTHON_SCRIPT="$2"
+OFFLINE_SCRIPT="$2"
+MODEL_PATH="$3"
+PROFILE_MODE="$4"
+NUM_SAMPLES="$5"
 
-# 只使用后8张NPU（设备编号8-15），与TP=8保持一致
-export ASCEND_RT_VISIBLE_DEVICES=12,13,14,15
+case "${PROFILE_MODE}" in
+    base) PREFETCH_FLAG="--no-enable-prefetch-with-hidden-states" ;;
+    prefetch) PREFETCH_FLAG="--enable-prefetch-with-hidden-states" ;;
+    *) exit 2 ;;
+esac
 
 mkdir -p "${OUTPUT_DIR}"
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
 
-failed_runs=()
-
-# for num_samples in 1 2 4 8; do
-for num_samples in 4; do
-    log_file="${OUTPUT_DIR}/glm_ns${num_samples}.log"
-    echo "Running num_samples=${num_samples}, max_num_seqs=${num_samples}, output=${log_file}"
-    if python "${PYTHON_SCRIPT}" \
-        --model "${MODEL}" \
-        --num-samples "${num_samples}" \
-        --max-num-seqs "${num_samples}" \
-        --max-model-len "${MAX_MODEL_LEN}" \
-        --max-tokens "${MAX_TOKENS}" \
-        --input-len "${INPUT_LEN}" \
-        --output-dir "${OUTPUT_DIR}" \
-        --tp "${TP}" \
-        --gpu-memory-utilization 0.94 \
-        2>&1 | tee "${log_file}"; then
-        echo "Finished num_samples=${num_samples}"
-    else
-        echo "FAILED num_samples=${num_samples}, see ${log_file}"
-        failed_runs+=("${num_samples}")
-    fi
-done
-
-if [ ${#failed_runs[@]} -eq 0 ]; then
-    echo "All runs completed. Logs are in ${OUTPUT_DIR}/"
-else
-    echo "Some runs failed: ${failed_runs[*]}"
-    exit 1
-fi
+python "${OFFLINE_SCRIPT}" \
+    --model "${MODEL_PATH}" \
+    --num-samples "${NUM_SAMPLES}" \
+    --max-num-seqs "${NUM_SAMPLES}" \
+    --max-model-len 68000 \
+    --max-tokens 64 \
+    --input-len 0 \
+    --output-dir "${OUTPUT_DIR}" \
+    --tp 16 \
+    --gpu-memory-utilization 0.94 \
+    --enable-segment-sfa \
+    "${PREFETCH_FLAG}" \
+    2>&1 | tee "${OUTPUT_DIR}/glm_bs${NUM_SAMPLES}.log"

@@ -55,7 +55,8 @@ if (!fs.existsSync(file)) {
   throw new Error(`trace file does not exist: ${file}`);
 }
 
-const keep = /mla_(?:query_)?preprocess|DynamicQuant|AscendQuant|QuantBatchMatmul|WeightQuantBatchMatmul|KvRmsNormRopeCache|InterleaveRope|BatchMatMul|MatMul|LayerNorm|RmsNorm|ScatterNdUpdate|LightningIndexer|AsuHbmIndexLookup|AsuHbmIndexMaintain|AsuKvGather|HiSparseFlashAttention|DaAttentionMerge|batch_matmul_transpose|MoeGatingTopK|MoeDistributeDispatch|MoeDistributeCombine|GroupedMatmul|_swiglu_quant_kernel/;
+const keep = /mla_(?:query_)?preprocess|DynamicQuant|AscendQuant|QuantBatchMatmul|WeightQuantBatchMatmul|KvRmsNormRopeCache|InterleaveRope|BatchMatMul|MatMul|LayerNorm|RmsNorm|ScatterNdUpdate|LightningIndexer|AsuHbmIndexLookup|AsuHbmIndexMaintain|AsuKvGather|(?:Hi|Seg)SparseFlashAttention|DaAttentionMerge|batch_matmul_transpose|MoeGatingTopK|MoeDistributeDispatch|MoeDistributeCombine|GroupedMatmul|_swiglu_quant_kernel/;
+const segmentedSfa = /^(?:HiSparse|SegSparse)FlashAttention$/;
 const processNames = new Map();
 const threadNames = new Map();
 const statistics = new Map();
@@ -203,7 +204,7 @@ stream.on("end", () => {
   const pidScores = new Map();
   for (const group of groups) {
     if (
-      /LightningIndexer|AsuHbmIndexLookup|AsuKvGather|HiSparseFlashAttention/.test(
+      /LightningIndexer|AsuHbmIndexLookup|AsuKvGather|(?:Hi|Seg)SparseFlashAttention/.test(
         group.name,
       )
     ) {
@@ -237,7 +238,7 @@ stream.on("end", () => {
     lightningIndexerHiCached: count(/^LightningIndexerHiCached$/, tid),
     asuLookup: count(/AsuHbmIndexLookup/, tid),
     asuGather: count(/^AsuKvGather$/, tid),
-    hiSparseFlashAttention: count(/^HiSparseFlashAttention$/, tid),
+    hiSparseFlashAttention: count(segmentedSfa, tid),
   }));
   // A full-model ACL graph may partition the main calculation over several
   // physical stream IDs. Decode main streams have one native MLA anchor and
@@ -252,8 +253,8 @@ stream.on("end", () => {
     .map(stream => stream.tid);
   const mainStream = [...mainStreams].sort(
     (left, right) =>
-      count(/^HiSparseFlashAttention$/, right) -
-      count(/^HiSparseFlashAttention$/, left),
+      count(segmentedSfa, right) -
+      count(segmentedSfa, left),
   )[0];
   const prefetchStreams = streamCountRows
     .filter(stream => stream.lightningIndexerHiCached > 0)
@@ -341,7 +342,7 @@ stream.on("end", () => {
     : countMany(/DynamicQuant/, prefetchStreams);
   const mainIndexerCount = mainCount(/^LightningIndexer$/);
   const mainLookupCount = mainCount(/AsuHbmIndexLookup/);
-  const sfaCount = mainCount(/^HiSparseFlashAttention$/);
+  const sfaCount = mainCount(segmentedSfa);
   const meanUpdateCount = aggregate(/ScatterNdUpdateMean/).count;
 
   let attentionPath = "unknown";
@@ -636,7 +637,7 @@ stream.on("end", () => {
       ),
       allGather: summarizeValues(gatherEvents.map(event => event.dur)),
       hitAndMissSfa: stableOperator(
-        /^HiSparseFlashAttention$/,
+        segmentedSfa,
         mainStreams,
       ),
       dynamicQuantOnPrefetch: prefetchStreams.length === 0
@@ -658,7 +659,7 @@ stream.on("end", () => {
       ["AsuHbmIndexLookup", /AsuHbmIndexLookup/],
       ["AsuKvGather", /^AsuKvGather$/],
       ["AsuHbmIndexMaintain", /AsuHbmIndexMaintain/],
-      ["HiSparseFlashAttention", /^HiSparseFlashAttention$/],
+      ["HiSparseFlashAttention", segmentedSfa],
       ["DaAttentionMerge", /^DaAttentionMerge$/],
       ["ScatterNdUpdate", /ScatterNdUpdate(?!Mean)/],
       ["ScatterNdUpdateMean", /ScatterNdUpdateMean/],

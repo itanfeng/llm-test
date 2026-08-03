@@ -2,3 +2,5 @@ glm5.2/pt/
 glm5.1/profiling/
 *.json
 *.DS_store
+*.zip
+*.z*

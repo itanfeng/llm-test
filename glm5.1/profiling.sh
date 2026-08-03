@@ -7,10 +7,12 @@ PROFILE_MODE="${1:-prefetch}"
 MODEL_TYPE="${2:-w4}"
 BATCH_SIZE="${3:-12}"
 
+export VLLM_ASCEND_DSA_HBM_HIT_RATE_STATS=1
+
 case "${PROFILE_MODE}" in
-    base|prefetch) ;;
+    offload|prefetch) ;;
     *)
-        echo "Usage: $0 [base|prefetch] [w4|w8|w8-reduced] [batch-size]" >&2
+        echo "Usage: $0 [offload|prefetch] [w4|w8|w8-reduced] [batch-size]" >&2
         exit 2
         ;;
 esac
@@ -20,7 +22,7 @@ case "${MODEL_TYPE}" in
     w8) MODEL_PATH="/data/model/GLM-5.1-w8a8" ;;
     w8-reduced) MODEL_PATH="/data/model/GLM-5.1-w8a8-reduced" ;;
     *)
-        echo "Usage: $0 [base|prefetch] [w4|w8|w8-reduced] [batch-size]" >&2
+        echo "Usage: $0 [offload|prefetch] [w4|w8|w8-reduced] [batch-size]" >&2
         exit 2
         ;;
 esac

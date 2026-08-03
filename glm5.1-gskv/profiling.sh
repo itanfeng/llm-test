@@ -3,7 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PROFILING_OUTPUT_DIR="${SCRIPT_DIR}/profiling/glm_base"
+PROFILING_OUTPUT_DIR="${SCRIPT_DIR}/profiling/glm_overlap"
 OFFLINE_SCRIPT="${SCRIPT_DIR}/offline_glm51.py"
 
 msprof \

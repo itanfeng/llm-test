@@ -386,20 +386,30 @@ def _decode_token_count(args: argparse.Namespace) -> int:
     return int(getattr(args, "max_tokens", getattr(args, "decode_tokens", 0)))
 
 
-def _hisparse_config(args: argparse.Namespace) -> str:
-    env_config = os.environ.get("HISPARSE_CONFIG")
+def _dsa_sparse_config(args: argparse.Namespace) -> dict[str, Any]:
+    env_config = os.environ.get("DSA_SPARSE_CONFIG")
     if env_config:
-        return env_config
+        config = json.loads(env_config)
+        if not isinstance(config, dict):
+            raise TypeError("DSA_SPARSE_CONFIG must contain a JSON object")
+        return config
 
-    config: dict[str, Any] = {
-        "full_backend": args.hisparse_full_backend,
-        "enable_dual_batch": bool(args.enable_dual_batch),
+    if args.enable_dual_batch:
+        raise ValueError(
+            "--enable-dual-batch is not supported by the "
+            "dev_lookup_maintain_integration DSA runtime"
+        )
+
+    return {
+        "enabled": True,
+        "kv_backend": args.dsa_kv_backend,
+        "segmented_sfa": bool(args.enable_segment_sfa),
+        "enable_row_mode_decode_graph": True,
+        "prefill_prewarm": True,
         "enable_prefetch_with_hidden_states": bool(
             args.enable_prefetch_with_hidden_states
         ),
-        "enable_segment_sfa": bool(args.enable_segment_sfa),
     }
-    return json.dumps(config, separators=(",", ":"))
 
 
 def _llm_kwargs(args: argparse.Namespace) -> dict[str, Any]:
@@ -412,15 +422,15 @@ def _llm_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "quantization": os.environ.get("HISPARSE_SMOKE_QUANTIZATION", "ascend"),
         "max_model_len": args.max_model_len,
         "max_num_seqs": args.max_num_seqs,
-        "enable_prefix_caching": True,
+        "enable_prefix_caching": args.enable_prefix_caching,
         "block_size": _BLOCK_SIZE,
         "gpu_memory_utilization": args.gpu_memory_utilization,
         "async_scheduling": False,
         "additional_config": {
+            "fuse_muls_add": False,
             "recompute_scheduler_enable": False,
             "multistream_overlap_shared_expert": False,
-            "enable_hisparse": True,
-            "hisparse_config": _hisparse_config(args),
+            "dsa_sparse_config": _dsa_sparse_config(args),
             "use_lightning_indexer_hi_cached": args.use_lightning_indexer_hi_cached,
         },
         "compilation_config": {
@@ -568,9 +578,18 @@ def _add_common_args(parser: argparse.ArgumentParser, *, profiling: bool = False
         default=float(os.environ.get("PROF_GPU_MEMORY_UTILIZATION", "0.85")),
     )
     parser.add_argument(
+        "--enable-prefix-caching",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable vLLM prefix caching (enabled by default)",
+    )
+    parser.add_argument(
+        "--dsa-kv-backend",
         "--hisparse-full-backend",
-        choices=("host_memory", "device"),
+        dest="dsa_kv_backend",
+        choices=("host_memory", "mock", "kvio"),
         default="host_memory",
+        help="DSA full-KV backend (the old --hisparse-full-backend name is an alias)",
     )
     parser.add_argument(
         "--enable-prefetch-with-hidden-states",
@@ -639,12 +658,20 @@ def main() -> int:
     )
     batch = _build_prompt_batch(tokenizer, args)
 
+    llm_kwargs = _llm_kwargs(args)
+    dsa_config = llm_kwargs["additional_config"]["dsa_sparse_config"]
+    prefix_cache_enabled = bool(llm_kwargs["enable_prefix_caching"])
     print(
-        "=== HiSparse graph offline "
+        "=== DSA sparse graph offline "
         f"tp={args.tp} num_samples={args.num_samples} "
         f"max_num_seqs={args.max_num_seqs} same_prompt_batch={args.same_prompt_batch} "
         f"capture_sizes={args.cudagraph_capture_sizes} "
-        "prefix_cache=True ==="
+        f"prefix_cache={prefix_cache_enabled} ==="
+    )
+    print(
+        "=== DSA sparse config: "
+        f"{json.dumps(dsa_config, sort_keys=True, separators=(',', ':'))} "
+        "==="
     )
     for idx, case in enumerate(batch.cases):
         print(
@@ -652,7 +679,7 @@ def main() -> int:
             f"gold={case.gold_answers}"
         )
 
-    llm = LLM(**_llm_kwargs(args))
+    llm = LLM(**llm_kwargs)
     llm.generate(
         [batch.prompts[0]],
         sampling_params=_greedy_sampling_params(1),
@@ -667,7 +694,7 @@ def main() -> int:
         cached = getattr(output, "num_cached_tokens", None)
         print(f"[{idx}] cached={cached}/{batch.prompt_tokens[idx]} answer={text!r}")
 
-    print("=== PASSED: HiSparse graph batch generation completed ===")
+    print("=== PASSED: DSA sparse graph batch generation completed ===")
     return 0
 
 

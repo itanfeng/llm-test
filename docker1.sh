@@ -1,5 +1,5 @@
 docker run -itd \
-  --name tf-vllm-ascend-8.5.1-lookup \
+  --name tf-vllm-ascend-v0.23.0rc1 \
   --network host \
   --ipc=host \
   --privileged \
@@ -16,6 +16,6 @@ docker run -itd \
   -v /docker:/docker \
   -v /data:/data \
   -w /data/tf \
-  quay.io/ascend/vllm-ascend:v0.18.0-a3 \
+  quay.io/ascend/vllm-ascend:v0.23.0rc1-a3 \
   sleep infinity
 

@@ -418,7 +418,7 @@ def _llm_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "tokenizer_mode": _tokenizer_mode_for_model(args.model),
         "trust_remote_code": True,
         "tensor_parallel_size": args.tp,
-        "enable_expert_parallel": args.tp > 1,
+        "enable_expert_parallel": False,
         "quantization": os.environ.get("HISPARSE_SMOKE_QUANTIZATION", "ascend"),
         "max_model_len": args.max_model_len,
         "max_num_seqs": args.max_num_seqs,

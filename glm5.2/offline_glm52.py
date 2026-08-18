@@ -116,6 +116,11 @@ def _parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=False,
     )
+    parser.add_argument(
+        "--enable-prefetch-with-hidden-states",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--profile-dir", type=Path)
     parser.add_argument("--profile-steps", type=int, default=0)
     return parser.parse_args()
@@ -249,6 +254,7 @@ def _make_additional_config(args: argparse.Namespace) -> dict[str, Any]:
             "io_backend": "host_memory",
             "lookup_backend": args.lookup_backend,
             "segmented_sfa": args.segmented_sfa,
+            "enable_prefetch_with_hidden_states": args.enable_prefetch_with_hidden_states,
         }
     return config
 
@@ -325,6 +331,9 @@ def main() -> int:
         "enforce_eager": args.enforce_eager,
         "lookup_backend": args.lookup_backend,
         "segmented_sfa": args.segmented_sfa,
+        "prefetch_mode": (
+            "prefetch" if args.enable_prefetch_with_hidden_states else "offload"
+        ),
         "profile_steps": args.profile_steps,
     }
     print(

@@ -2,24 +2,30 @@
 
 set -euo pipefail
 
-if [[ $# -ne 5 ]]; then
-    echo "Usage: $0 <output-dir> <offline-script> <model-path> <full-hbm|host> <batch-size>" >&2
+if [[ $# -ne 6 ]]; then
+    echo "Usage: $0 <output-dir> <offline-script> <model-path> <full-hbm|host> <offload|prefetch> <batch-size>" >&2
     exit 2
 fi
 
 OUTPUT_DIR="$1"
 OFFLINE_SCRIPT="$2"
 MODEL_PATH="$3"
-PROFILE_MODE="$4"
-BATCH_SIZE="$5"
+CACHE_MODE="$4"
+PREFETCH_MODE="$5"
+BATCH_SIZE="$6"
 
-case "${PROFILE_MODE}" in
+case "${CACHE_MODE}" in
     full-hbm) DSA_MODE="full_hbm" ;;
     host) DSA_MODE="host_memory" ;;
     *)
-        echo "profile mode must be full-hbm or host" >&2
+        echo "cache mode must be full-hbm or host" >&2
         exit 2
         ;;
+esac
+case "${PREFETCH_MODE}" in
+    offload) PREFETCH_FLAG="--no-enable-prefetch-with-hidden-states" ;;
+    prefetch) PREFETCH_FLAG="--enable-prefetch-with-hidden-states" ;;
+    *) exit 2 ;;
 esac
 
 if ! [[ "${BATCH_SIZE}" =~ ^[1-9][0-9]*$ ]]; then
@@ -56,4 +62,5 @@ python "${OFFLINE_SCRIPT}" \
     --tp "${GLM52_TP:-16}" \
     --gpu-memory-utilization "${GLM52_GPU_MEMORY_UTILIZATION:-0.92}" \
     --max-num-batched-tokens "${GLM52_MAX_NUM_BATCHED_TOKENS:-8192}" \
+    "${PREFETCH_FLAG}" \
     2>&1 | tee "${OUTPUT_DIR}/glm_bs${BATCH_SIZE}.log"

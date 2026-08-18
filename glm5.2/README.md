@@ -14,9 +14,10 @@ bash profiling.sh
 也可以显式选择模式、模型和 batch size：
 
 ```bash
+bash profiling.sh host prefetch w4 12
+bash profiling.sh host offload w4 12
+bash profiling.sh full-hbm prefetch w4 1
 bash profiling.sh host w4 12
-bash profiling.sh full-hbm w4 1
-bash profiling.sh host w8 12
 ```
 
 `full-hbm` 仅支持 BS=1。结果保存在

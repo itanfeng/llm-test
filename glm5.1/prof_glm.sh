@@ -3,19 +3,20 @@
 set -euo pipefail
 
 if [[ $# -ne 5 ]]; then
-    echo "Usage: $0 <output-dir> <offline-script> <model-path> <base|prefetch> <batch-size>" >&2
+    echo "Usage: $0 <output-dir> <offline-script> <model-path> <offload|prefetch> <batch-size>" >&2
     exit 2
 fi
 
 OUTPUT_DIR="$1"
 OFFLINE_SCRIPT="$2"
 MODEL_PATH="$3"
-PROFILE_MODE="$4"
+PREFETCH_MODE="$4"
 NUM_SAMPLES="$5"
 
-case "${PROFILE_MODE}" in
-    base) PREFETCH_FLAG="--no-enable-prefetch-with-hidden-states" ;;
+case "${PREFETCH_MODE}" in
+    offload) PREFETCH_FLAG="--no-enable-prefetch-with-hidden-states" ;;
     prefetch) PREFETCH_FLAG="--enable-prefetch-with-hidden-states" ;;
+    base) PREFETCH_FLAG="--no-enable-prefetch-with-hidden-states" ;;
     *) exit 2 ;;
 esac
 

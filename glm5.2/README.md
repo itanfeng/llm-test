@@ -60,3 +60,13 @@ bash install.sh
 
 如果 `vllm-ascend` 不在 `llm-test` 同级目录，可通过
 `VLLM_ASCEND_ROOT=/path/to/vllm-ascend` 覆盖。
+
+
+## 切换vllm-ascend分支后要同步切换third_party的commit
+```bash
+git switch dsa-sparse-0.23-graph-prefetch
+git submodule sync --recursive
+git submodule update --init --recursive --checkout
+git submodule status csrc/third_party/catlass
+git -C csrc/third_party/catlass rev-parse HEAD
+```

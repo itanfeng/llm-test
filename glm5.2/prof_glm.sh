@@ -47,6 +47,14 @@ export HCCL_BUFFSIZE="200"
 export OMP_PROC_BIND="false"
 export OMP_NUM_THREADS="1"
 export PYTORCH_NPU_ALLOC_CONF="expandable_segments:True"
+# FlashComm/EP graph execution requires Task Queue for HCCL KFC stream
+# allocator registration.  This is common runtime setup and is intentionally
+# independent of PREFETCH_MODE.
+export TASK_QUEUE_ENABLE=1
+
+LOG_FILE="${OUTPUT_DIR}/glm_bs${BATCH_SIZE}.log"
+printf 'BENCH_ENV TASK_QUEUE_ENABLE=%s PREFETCH_MODE=%s\n' \
+    "${TASK_QUEUE_ENABLE}" "${PREFETCH_MODE}" | tee "${LOG_FILE}"
 
 python "${OFFLINE_SCRIPT}" \
     --mode "${DSA_MODE}" \
@@ -63,4 +71,4 @@ python "${OFFLINE_SCRIPT}" \
     --gpu-memory-utilization "${GLM52_GPU_MEMORY_UTILIZATION:-0.92}" \
     --max-num-batched-tokens "${GLM52_MAX_NUM_BATCHED_TOKENS:-8192}" \
     "${PREFETCH_FLAG}" \
-    2>&1 | tee "${OUTPUT_DIR}/glm_bs${BATCH_SIZE}.log"
+    2>&1 | tee -a "${LOG_FILE}"

@@ -4,12 +4,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-# Keep the profiling environment aligned with examples/dsa_sparse/profiling.sh.
-# The v0.23.0 container may globally enable Task Queue, which makes the
-# FlashComm/EP warmup fail while HCCL registers its stream allocator, before
-# the DSA Sparse prefetch runtime is initialized.
-unset TASK_QUEUE_ENABLE
-
 CACHE_MODE="host"
 PREFETCH_MODE="prefetch"
 MODEL_TYPE="w4"
@@ -18,7 +12,7 @@ BATCH_SIZE="12"
 usage() {
     echo "Usage: $0 [full-hbm|host] [w4|w8] [batch-size]" >&2
     echo "       $0 [full-hbm|host] [offload|prefetch] [w4|w8] [batch-size]" >&2
-    echo "The second form explicitly sets PREFETCH_MODE (default is prefetch)." >&2
+    echo "The second form explicitly sets PREFETCH_MODE (default is offload)." >&2
 }
 
 case "$#" in

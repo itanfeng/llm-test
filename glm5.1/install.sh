@@ -3,4 +3,4 @@ cd ../../vllm-ascend
 PIP_INDEX_URL=https://mirrors.huaweicloud.com/repository/pypi/simple \
 PIP_EXTRA_INDEX_URL=https://mirrors.huaweicloud.com/ascend/repos/pypi \
 PIP_TRUSTED_HOST=mirrors.huaweicloud.com \
-pip install -v -e .
+pip install -v -e . 2>&1 | tee vllm-ascend-v0.18.0-install.log

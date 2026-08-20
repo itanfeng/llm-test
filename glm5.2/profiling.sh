@@ -5,9 +5,34 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 CACHE_MODE="host"
-PREFETCH_MODE="prefetch"
+PREFETCH_MODE="offload"
 MODEL_TYPE="w4"
 BATCH_SIZE="12"
+
+active_npu_processes() {
+    npu-smi info | awk -F '|' '
+        $2 ~ /^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]*$/ &&
+        $3 ~ /^[[:space:]]*[0-9]+[[:space:]]*$/ {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
+            gsub(/[[:space:]]+/, "/", $2)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", $4)
+            printf "NPU/chip=%s pid=%s process=%s\n", $2, $3, $4
+        }
+    '
+}
+
+ensure_npus_are_idle() {
+    local active_processes
+    active_processes="$(active_npu_processes)"
+    if [[ -n "${active_processes}" ]]; then
+        echo "ERROR: GLM-5.2 profiling requires exclusive access to all 16 NPU dies." >&2
+        echo "The following NPU processes are already running:" >&2
+        printf '%s\n' "${active_processes}" >&2
+        echo "Stop or coordinate the other workload, then rerun this script." >&2
+        return 1
+    fi
+}
 
 usage() {
     echo "Usage: $0 [full-hbm|host] [w4|w8] [batch-size]" >&2
@@ -77,6 +102,8 @@ if [[ "${CACHE_MODE}" == "full-hbm" && "${BATCH_SIZE}" -ne 1 ]]; then
 fi
 
 OUTPUT_DIR="${SCRIPT_DIR}/profiling-${MODEL_TYPE}/${CACHE_MODE}-${PREFETCH_MODE}-bs${BATCH_SIZE}"
+
+ensure_npus_are_idle
 
 echo "Profiling model=${MODEL_TYPE}, cache=${CACHE_MODE}, prefetch=${PREFETCH_MODE}, batch_size=${BATCH_SIZE}"
 echo "Output: ${OUTPUT_DIR}"

@@ -52,9 +52,15 @@ export PYTORCH_NPU_ALLOC_CONF="expandable_segments:True"
 # independent of PREFETCH_MODE.
 export TASK_QUEUE_ENABLE=1
 
+# Profiling validates the active framework checkout, so compile the current
+# graph on every run rather than loading an artifact from an earlier mode or
+# code revision.
+export VLLM_DISABLE_COMPILE_CACHE=1
+
 LOG_FILE="${OUTPUT_DIR}/glm_bs${BATCH_SIZE}.log"
-printf 'BENCH_ENV TASK_QUEUE_ENABLE=%s PREFETCH_MODE=%s\n' \
-    "${TASK_QUEUE_ENABLE}" "${PREFETCH_MODE}" | tee "${LOG_FILE}"
+printf 'BENCH_ENV TASK_QUEUE_ENABLE=%s PREFETCH_MODE=%s VLLM_DISABLE_COMPILE_CACHE=%s\n' \
+    "${TASK_QUEUE_ENABLE}" "${PREFETCH_MODE}" \
+    "${VLLM_DISABLE_COMPILE_CACHE}" | tee "${LOG_FILE}"
 
 python "${OFFLINE_SCRIPT}" \
     --mode "${DSA_MODE}" \

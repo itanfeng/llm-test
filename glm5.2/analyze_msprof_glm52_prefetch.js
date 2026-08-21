@@ -4,10 +4,11 @@
 // from large msprof Chrome traces without loading the whole JSON into memory.
 //
 // The main asynchronous AsuKvGather stream is used as the decode anchor.  A
-// GLM-5.2 decode step has exactly 78 main gathers, while hidden-state prefetch
-// has 19 predicted cohorts x 4 layer gathers = 76 speculative gathers.
-// This remains stable when ACL graph execution maps the main calculation to
-// different physical stream IDs.
+// GLM-5.2 decode step has exactly 78 exact gathers.  The original prefetch
+// layout puts 19 x 4 speculative gathers on a side stream.  The pipelined
+// layout disables the 1 -> 2 bootstrap and interleaves 18 x 4 speculative
+// gathers with the exact gathers on the same stream.  Both layouts are
+// detected from the repeating ACL graph task-id sequence.
 //
 // Usage:
 //   node analyze_msprof_glm52_prefetch.js BASE.json PREFETCH.json \
@@ -30,6 +31,7 @@ const readIntOption = (name, fallback) => {
 };
 const numLayers = readIntOption("--num-layers", 78);
 const groupSize = readIntOption("--group-size", 4);
+const prefetchGatherBatchSize = groupSize / 2;
 const firstGroupedLayer = readIntOption("--first-grouped-layer", 2);
 const tailSteps = readIntOption("--tail-steps", 20);
 const outputOption = argv.find(argument => argument.startsWith("--output="));
@@ -41,6 +43,7 @@ if (
   numLayers < 2 ||
   !Number.isInteger(groupSize) ||
   groupSize < 1 ||
+  !Number.isInteger(prefetchGatherBatchSize) ||
   !Number.isInteger(firstGroupedLayer) ||
   firstGroupedLayer < 0 ||
   firstGroupedLayer >= numLayers ||
@@ -207,9 +210,9 @@ function pickHardwarePid(parsed) {
   return result;
 }
 
-function buildDecodeSteps(mainGatherEvents) {
+function repeatingTaskPeriod(gatherEvents, candidatePeriods) {
   const taskCounts = new Map();
-  for (const event of mainGatherEvents) {
+  for (const event of gatherEvents) {
     taskCounts.set(event.task, (taskCounts.get(event.task) ?? 0) + 1);
   }
   const maximumTaskCount = Math.max(...taskCounts.values());
@@ -219,9 +222,96 @@ function buildDecodeSteps(mainGatherEvents) {
       .map(([task]) => task),
   );
   const startIndices = [];
-  for (let index = 0; index < mainGatherEvents.length; index++) {
-    if (mainGatherEvents[index].task === startTask) startIndices.push(index);
+  for (let index = 0; index < gatherEvents.length; index++) {
+    if (gatherEvents[index].task === startTask) startIndices.push(index);
   }
+  const periodScores = candidatePeriods.map(period => ({
+    period,
+    count: startIndices.filter((startIndex, index) =>
+      index + 1 < startIndices.length &&
+      startIndices[index + 1] - startIndex === period
+    ).length,
+  })).sort((left, right) => right.count - left.count);
+  const period = periodScores[0]?.count > 0 ? periodScores[0].period : null;
+  return {startTask, taskCounts, startIndices, period, periodScores};
+}
+
+function splitGatherLayout(gatherEvents, prefetchActive) {
+  const predictionSources = [];
+  for (
+    let source = firstGroupedLayer;
+    source + groupSize < numLayers;
+    source += groupSize
+  ) {
+    predictionSources.push(source);
+  }
+  const staggeredPrefetchCount = predictionSources.length * groupSize;
+  const candidatePeriods = prefetchActive
+    ? [numLayers, numLayers + staggeredPrefetchCount]
+    : [numLayers];
+  const repeating = repeatingTaskPeriod(gatherEvents, candidatePeriods);
+  if (repeating.period === null) {
+    throw new Error("no repeating AsuKvGather task-id period found");
+  }
+
+  const exact = [];
+  const prefetch = [];
+  const periods = [];
+  let lastCompletePeriodEnd = null;
+  for (let index = 0; index + 1 < repeating.startIndices.length; index++) {
+    const startIndex = repeating.startIndices[index];
+    const nextStartIndex = repeating.startIndices[index + 1];
+    if (nextStartIndex - startIndex !== repeating.period) continue;
+    lastCompletePeriodEnd = nextStartIndex;
+    const periodEvents = gatherEvents.slice(startIndex, nextStartIndex);
+    if (repeating.period === numLayers) {
+      exact.push(...periodEvents);
+      periods.push({exact: periodEvents, prefetch: []});
+      continue;
+    }
+
+    const exactPeriod = [];
+    const prefetchPeriod = [];
+    let cursor = 0;
+    for (let layer = 0; layer < numLayers; layer++) {
+      exactPeriod.push(periodEvents[cursor++]);
+      if (
+        layer >= firstGroupedLayer &&
+        layer < firstGroupedLayer + staggeredPrefetchCount
+      ) {
+        prefetchPeriod.push(periodEvents[cursor++]);
+      }
+    }
+    if (cursor !== periodEvents.length) {
+      throw new Error(
+        `invalid interleaved Gather layout: consumed ${cursor}, ` +
+        `observed ${periodEvents.length}`,
+      );
+    }
+    exact.push(...exactPeriod);
+    prefetch.push(...prefetchPeriod);
+    periods.push({exact: exactPeriod, prefetch: prefetchPeriod});
+  }
+  // Preserve the first exact Gather of the following period.  It is the end
+  // timestamp of the last complete decode step; it is excluded again by the
+  // stable half-open time range and therefore does not affect operator counts.
+  if (lastCompletePeriodEnd !== null) {
+    exact.push(gatherEvents[lastCompletePeriodEnd]);
+  }
+  return {
+    kind: repeating.period === numLayers ? "separate" : "interleaved",
+    repeating,
+    predictionSources,
+    staggeredPrefetchCount,
+    exact,
+    prefetch,
+    periods,
+  };
+}
+
+function buildDecodeSteps(mainGatherEvents) {
+  const repeating = repeatingTaskPeriod(mainGatherEvents, [numLayers]);
+  const {startTask, taskCounts, startIndices} = repeating;
   const steps = [];
   for (let index = 0; index + 1 < startIndices.length; index++) {
     const startIndex = startIndices[index];
@@ -291,9 +381,15 @@ function analyzeParsed(parsed, label) {
     throw new Error(`no AsuKvGather stream found in ${parsed.file}`);
   }
 
-  const mainGatherEvents = hardwareEvents.filter(event =>
+  const rawMainGatherEvents = hardwareEvents.filter(event =>
     event.tid === mainGatherStream && MAIN_GATHER.test(event.name)
   );
+  const hiCachedCountAll = patternCount(hardwareEvents, PREFETCH_INDEXER);
+  const gatherLayout = splitGatherLayout(
+    rawMainGatherEvents,
+    hiCachedCountAll > 0,
+  );
+  const mainGatherEvents = gatherLayout.exact;
   const decoded = buildDecodeSteps(mainGatherEvents);
   const stableSteps = decoded.steps.slice(-tailSteps);
   if (stableSteps.length === 0) {
@@ -306,19 +402,26 @@ function analyzeParsed(parsed, label) {
   );
 
   const hiCachedCount = patternCount(stableEvents, PREFETCH_INDEXER);
-  const expectedPrefetchGathers = Math.floor(
-    (numLayers - firstGroupedLayer) / groupSize,
+  const legacyPrefetchGathers = (
+    1 + gatherLayout.predictionSources.length
   ) * groupSize;
+  const candidatePrefetchGathers = gatherLayout.kind === "interleaved"
+    ? [gatherLayout.staggeredPrefetchCount]
+    : [legacyPrefetchGathers, gatherLayout.staggeredPrefetchCount];
   let prefetchStream = null;
   if (hiCachedCount > 0) {
-    const expectedTotal = expectedPrefetchGathers * stableSteps.length;
-    const candidates = gatherCounts.filter(row =>
-      row.tid !== mainGatherStream
-    ).map(row => ({
-      ...row,
-      hiCached: patternCount(hardwareEvents, PREFETCH_INDEXER, row.tid),
-      lookup: patternCount(hardwareEvents, LOOKUP, row.tid),
-      distance: Math.abs(row.count - expectedTotal),
+    const expectedTotals = candidatePrefetchGathers.map(
+      count => count * stableSteps.length,
+    );
+    const candidates = tids.filter(tid => tid !== mainGatherStream)
+      .map(tid => ({
+      tid,
+      count: patternCount(hardwareEvents, MAIN_GATHER, tid),
+      hiCached: patternCount(hardwareEvents, PREFETCH_INDEXER, tid),
+      lookup: patternCount(hardwareEvents, LOOKUP, tid),
+      distance: Math.min(...expectedTotals.map(expectedTotal => Math.abs(
+        patternCount(hardwareEvents, MAIN_GATHER, tid) - expectedTotal,
+      ))),
     }));
     prefetchStream = candidates.sort((left, right) =>
       right.hiCached - left.hiCached ||
@@ -334,6 +437,31 @@ function analyzeParsed(parsed, label) {
     patternCount(hardwareEvents, /SparseFlashAttention/, tid) > 0 ||
     patternCount(hardwareEvents, /KvRmsNormRopeCache/, tid) > 0
   );
+  const prefetchGatherEvents = gatherLayout.kind === "interleaved"
+    ? gatherLayout.prefetch.filter(event =>
+      event.ts >= stableStart && event.ts < stableEnd
+    )
+    : prefetchStream === null
+      ? []
+      : stableEvents.filter(event =>
+        event.tid === prefetchStream && MAIN_GATHER.test(event.name)
+      );
+  const observedPrefetchGathersPerStep = prefetchGatherEvents.length /
+    stableSteps.length;
+  const prefetchGatherSchedule = gatherLayout.kind === "interleaved"
+    ? "main_stream_1x4"
+    : prefetchStream === null
+      ? "disabled"
+      : Math.abs(
+        observedPrefetchGathersPerStep - gatherLayout.staggeredPrefetchCount,
+      ) < 0.5
+        ? "prefetch_stream_2x2"
+        : "prefetch_stream_4";
+  const expectedPrefetchGathers = prefetchGatherSchedule === "disabled"
+    ? 0
+    : prefetchGatherSchedule === "prefetch_stream_4"
+      ? legacyPrefetchGathers
+      : gatherLayout.staggeredPrefetchCount;
 
   const stableLayerRecords = stableSteps.flatMap((step, stepIndex) =>
     step.layers.map(layer => ({
@@ -342,24 +470,22 @@ function analyzeParsed(parsed, label) {
       latency: layer.latency,
     }))
   );
-  const targetGroupLeaders = [];
-  for (
-    let leader = firstGroupedLayer;
-    leader < numLayers;
-    leader += groupSize
-  ) {
-    targetGroupLeaders.push(leader);
+  let prefetchReleaseLayers;
+  if (prefetchGatherSchedule === "main_stream_1x4") {
+    prefetchReleaseLayers = new Set(Array.from(
+      {length: gatherLayout.staggeredPrefetchCount},
+      (_, index) => firstGroupedLayer + index,
+    ));
+  } else if (prefetchGatherSchedule === "prefetch_stream_2x2") {
+    prefetchReleaseLayers = new Set(gatherLayout.predictionSources.flatMap(
+      layer => [layer, layer + prefetchGatherBatchSize],
+    ));
+  } else {
+    prefetchReleaseLayers = new Set([
+      firstGroupedLayer,
+      ...gatherLayout.predictionSources.map(layer => layer + 1),
+    ]);
   }
-  // The first bootstrap prediction is layer 1 -> group 2.  Every later
-  // prediction uses one group leader to predict the next group and releases
-  // its four gathers at source + 1.
-  const predictionSources = [
-    firstGroupedLayer - 1,
-    ...targetGroupLeaders.slice(0, -1),
-  ];
-  const prefetchReleaseLayers = new Set(
-    predictionSources.map(layer => layer + 1),
-  );
   const releaseLayerRecords = stableLayerRecords.filter(record =>
     prefetchReleaseLayers.has(record.layer)
   );
@@ -412,11 +538,6 @@ function analyzeParsed(parsed, label) {
     });
   }
 
-  const prefetchGatherEvents = prefetchStream === null
-    ? []
-    : stableEvents.filter(event =>
-      event.tid === prefetchStream && MAIN_GATHER.test(event.name)
-    );
   const prefetchComputeEvents = prefetchStream === null
     ? []
     : stableEvents.filter(event =>
@@ -456,8 +577,8 @@ function analyzeParsed(parsed, label) {
     moeCombine: /MoeDistributeCombine/,
   };
   const competition = {};
-  const stableMainGatherEvents = stableEvents.filter(event =>
-    event.tid === mainGatherStream && MAIN_GATHER.test(event.name)
+  const stableMainGatherEvents = mainGatherEvents.filter(event =>
+    event.ts >= stableStart && event.ts < stableEnd
   );
   competition.mainGather = {
     againstPrefetchGather: overlapBreakdown(
@@ -502,6 +623,10 @@ function analyzeParsed(parsed, label) {
     streams: {
       mainGather: mainGatherStream,
       prefetch: prefetchStream,
+      prefetchCompute: prefetchStream,
+      prefetchGather: prefetchGatherEvents.length > 0
+        ? prefetchGatherEvents[0].tid
+        : null,
       maintain: maintainStream?.count > 0 ? maintainStream.tid : null,
       mainCompute: mainComputeStreams,
     },
@@ -546,11 +671,7 @@ function analyzeParsed(parsed, label) {
         stableEvents.filter(event => event.tid !== prefetchStream),
         LOOKUP,
       ),
-      mainGather: operatorSummary(
-        stableEvents,
-        MAIN_GATHER,
-        mainGatherStream,
-      ),
+      mainGather: summarize(stableMainGatherEvents.map(event => event.dur)),
       prefetchIndexer: prefetchStream === null
         ? {count: 0}
         : operatorSummary(stableEvents, PREFETCH_INDEXER, prefetchStream),
@@ -569,6 +690,10 @@ function analyzeParsed(parsed, label) {
     },
     prefetch: {
       active: prefetchStream !== null,
+      gatherLayout: prefetchGatherSchedule,
+      gatherStream: prefetchGatherEvents.length > 0
+        ? prefetchGatherEvents[0].tid
+        : null,
       expectedGathersPerStep: expectedPrefetchGathers,
       observedMainGathersPerStep: summarize(mainGathersPerStep),
       observedPrefetchGathersPerStep: summarize(prefetchGathersPerStep),
@@ -585,7 +710,30 @@ function ratioChange(base, candidate) {
   return (candidate - base) / base;
 }
 
+function summarizeLayerSelection(report, selectedLayers) {
+  let total = 0;
+  let count = 0;
+  for (const layer of report.decode.perLayer) {
+    if (!selectedLayers.has(layer.layer)) continue;
+    total += layer.total ?? 0;
+    count += layer.count ?? 0;
+  }
+  return count === 0 ? {count: 0} : {count, total, avg: total / count};
+}
+
 function compareReports(base, prefetch) {
+  const releaseLayers = new Set(prefetch.decode.prefetchReleaseLayers);
+  const nonReleaseLayers = new Set();
+  for (let layer = 0; layer < numLayers - 1; layer++) {
+    if (!releaseLayers.has(layer)) nonReleaseLayers.add(layer);
+  }
+  const baseRelease = summarizeLayerSelection(base, releaseLayers);
+  const prefetchRelease = summarizeLayerSelection(prefetch, releaseLayers);
+  const baseNonRelease = summarizeLayerSelection(base, nonReleaseLayers);
+  const prefetchNonRelease = summarizeLayerSelection(
+    prefetch,
+    nonReleaseLayers,
+  );
   const operatorChanges = {};
   for (const name of Object.keys(base.stableKeyOperators)) {
     const baseValue = base.stableKeyOperators[name]?.avg;
@@ -627,23 +775,21 @@ function compareReports(base, prefetch) {
       ),
     },
     stablePrefetchReleaseLayer: {
-      baseAvg: base.decode.stablePrefetchReleaseLayer.avg,
-      prefetchAvg: prefetch.decode.stablePrefetchReleaseLayer.avg,
-      delta: prefetch.decode.stablePrefetchReleaseLayer.avg -
-        base.decode.stablePrefetchReleaseLayer.avg,
+      baseAvg: baseRelease.avg,
+      prefetchAvg: prefetchRelease.avg,
+      delta: prefetchRelease.avg - baseRelease.avg,
       relativeChange: ratioChange(
-        base.decode.stablePrefetchReleaseLayer.avg,
-        prefetch.decode.stablePrefetchReleaseLayer.avg,
+        baseRelease.avg,
+        prefetchRelease.avg,
       ),
     },
     stableNonReleaseLayer: {
-      baseAvg: base.decode.stableNonReleaseLayer.avg,
-      prefetchAvg: prefetch.decode.stableNonReleaseLayer.avg,
-      delta: prefetch.decode.stableNonReleaseLayer.avg -
-        base.decode.stableNonReleaseLayer.avg,
+      baseAvg: baseNonRelease.avg,
+      prefetchAvg: prefetchNonRelease.avg,
+      delta: prefetchNonRelease.avg - baseNonRelease.avg,
       relativeChange: ratioChange(
-        base.decode.stableNonReleaseLayer.avg,
-        prefetch.decode.stableNonReleaseLayer.avg,
+        baseNonRelease.avg,
+        prefetchNonRelease.avg,
       ),
     },
     operatorChanges,
@@ -705,7 +851,8 @@ function printSummary(report) {
   console.log(
     `Streams: offload main-gather=${base.streams.mainGather}; ` +
     `prefetch main-gather=${prefetch.streams.mainGather}, ` +
-    `prefetch-compute/gather=${prefetch.streams.prefetch}, ` +
+    `prefetch-compute=${prefetch.streams.prefetchCompute}, ` +
+    `prefetch-gather=${prefetch.streams.prefetchGather}, ` +
     `maintain=${prefetch.streams.maintain}.`,
   );
   console.log(

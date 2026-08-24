@@ -5,14 +5,17 @@
 //
 // The main asynchronous AsuKvGather stream is used as the decode anchor.  A
 // GLM-5.2 decode step has exactly 78 exact gathers.  The original prefetch
-// layout puts 19 x 4 speculative gathers on a side stream.  The pipelined
-// layout disables the 1 -> 2 bootstrap and interleaves 18 x 4 speculative
-// gathers with the exact gathers on the same stream.  Both layouts are
-// detected from the repeating ACL graph task-id sequence.
+// layout puts 19 x 4 speculative gathers on the Prefetch Compute stream.  The
+// first pipelined layout disables the 1 -> 2 bootstrap and interleaves 18 x 4
+// speculative gathers with exact gathers on the same stream.  The 2+2 layout
+// keeps 18 x 4 gathers on a dedicated Prefetch Gather stream.  A concentrated
+// no-bootstrap layout has the same 72-Gather count as 2+2, so select it
+// explicitly with --prefetch-gather-schedule.
 //
 // Usage:
 //   node analyze_msprof_glm52_prefetch.js BASE.json PREFETCH.json \
-//     [--tail-steps=20] [--pretty] [--output=REPORT.json]
+//     [--tail-steps=20] [--prefetch-gather-schedule=auto] \
+//     [--pretty] [--output=REPORT.json]
 
 "use strict";
 
@@ -34,6 +37,19 @@ const groupSize = readIntOption("--group-size", 4);
 const prefetchGatherBatchSize = groupSize / 2;
 const firstGroupedLayer = readIntOption("--first-grouped-layer", 2);
 const tailSteps = readIntOption("--tail-steps", 20);
+const scheduleOption = argv.find(argument =>
+  argument.startsWith("--prefetch-gather-schedule=")
+);
+const forcedPrefetchGatherSchedule = scheduleOption === undefined
+  ? "auto"
+  : scheduleOption.slice("--prefetch-gather-schedule=".length);
+const validPrefetchGatherSchedules = new Set([
+  "auto",
+  "main_stream_1x4",
+  "prefetch_stream_2x2",
+  "prefetch_stream_4",
+  "prefetch_stream_4_no_bootstrap",
+]);
 const outputOption = argv.find(argument => argument.startsWith("--output="));
 const outputFile = outputOption?.slice("--output=".length);
 
@@ -48,11 +64,13 @@ if (
   firstGroupedLayer < 0 ||
   firstGroupedLayer >= numLayers ||
   !Number.isInteger(tailSteps) ||
-  tailSteps < 1
+  tailSteps < 1 ||
+  !validPrefetchGatherSchedules.has(forcedPrefetchGatherSchedule)
 ) {
   throw new Error(
     "usage: node analyze_msprof_glm52_prefetch.js BASE.json PREFETCH.json " +
-    "[--tail-steps=20] [--pretty] [--output=REPORT.json]",
+    "[--tail-steps=20] [--prefetch-gather-schedule=auto] " +
+    "[--pretty] [--output=REPORT.json]",
   );
 }
 for (const file of inputFiles) {
@@ -408,26 +426,42 @@ function analyzeParsed(parsed, label) {
   const candidatePrefetchGathers = gatherLayout.kind === "interleaved"
     ? [gatherLayout.staggeredPrefetchCount]
     : [legacyPrefetchGathers, gatherLayout.staggeredPrefetchCount];
-  let prefetchStream = null;
+  let prefetchComputeStream = null;
   if (hiCachedCount > 0) {
+    const candidates = tids.filter(tid => tid !== mainGatherStream)
+      .map(tid => ({
+      tid,
+      hiCached: patternCount(stableEvents, PREFETCH_INDEXER, tid),
+      lookup: patternCount(stableEvents, LOOKUP, tid),
+    }));
+    prefetchComputeStream = candidates.sort((left, right) =>
+      right.hiCached - left.hiCached ||
+      right.lookup - left.lookup
+    )[0]?.tid ?? null;
+  }
+  let prefetchGatherStream = null;
+  if (gatherLayout.kind === "interleaved") {
+    prefetchGatherStream = mainGatherStream;
+  } else if (prefetchComputeStream !== null) {
     const expectedTotals = candidatePrefetchGathers.map(
       count => count * stableSteps.length,
     );
     const candidates = tids.filter(tid => tid !== mainGatherStream)
-      .map(tid => ({
-      tid,
-      count: patternCount(hardwareEvents, MAIN_GATHER, tid),
-      hiCached: patternCount(hardwareEvents, PREFETCH_INDEXER, tid),
-      lookup: patternCount(hardwareEvents, LOOKUP, tid),
-      distance: Math.min(...expectedTotals.map(expectedTotal => Math.abs(
-        patternCount(hardwareEvents, MAIN_GATHER, tid) - expectedTotal,
-      ))),
-    }));
-    prefetchStream = candidates.sort((left, right) =>
-      right.hiCached - left.hiCached ||
-      right.lookup - left.lookup ||
-      left.distance - right.distance
-    )[0]?.tid ?? null;
+      .map(tid => {
+        const count = patternCount(stableEvents, MAIN_GATHER, tid);
+        return {
+          tid,
+          count,
+          distance: Math.min(...expectedTotals.map(expectedTotal =>
+            Math.abs(count - expectedTotal)
+          )),
+        };
+      })
+      .filter(candidate => candidate.count > 0)
+      .sort((left, right) =>
+        left.distance - right.distance || right.count - left.count
+      );
+    prefetchGatherStream = candidates[0]?.tid ?? null;
   }
   const maintainStream = tids.map(tid => ({
     tid,
@@ -441,27 +475,50 @@ function analyzeParsed(parsed, label) {
     ? gatherLayout.prefetch.filter(event =>
       event.ts >= stableStart && event.ts < stableEnd
     )
-    : prefetchStream === null
+    : prefetchGatherStream === null
       ? []
       : stableEvents.filter(event =>
-        event.tid === prefetchStream && MAIN_GATHER.test(event.name)
+        event.tid === prefetchGatherStream && MAIN_GATHER.test(event.name)
       );
   const observedPrefetchGathersPerStep = prefetchGatherEvents.length /
     stableSteps.length;
-  const prefetchGatherSchedule = gatherLayout.kind === "interleaved"
+  const detectedPrefetchGatherSchedule = gatherLayout.kind === "interleaved"
     ? "main_stream_1x4"
-    : prefetchStream === null
+    : prefetchGatherStream === null
       ? "disabled"
       : Math.abs(
         observedPrefetchGathersPerStep - gatherLayout.staggeredPrefetchCount,
       ) < 0.5
         ? "prefetch_stream_2x2"
         : "prefetch_stream_4";
+  const prefetchGatherSchedule = label === "prefetch" &&
+    forcedPrefetchGatherSchedule !== "auto"
+    ? forcedPrefetchGatherSchedule
+    : detectedPrefetchGatherSchedule;
+  if (
+    (prefetchGatherSchedule === "main_stream_1x4") !==
+    (gatherLayout.kind === "interleaved")
+  ) {
+    throw new Error(
+      `prefetch Gather schedule ${prefetchGatherSchedule} conflicts with ` +
+      `${gatherLayout.kind} stream layout in ${parsed.file}`,
+    );
+  }
   const expectedPrefetchGathers = prefetchGatherSchedule === "disabled"
     ? 0
     : prefetchGatherSchedule === "prefetch_stream_4"
       ? legacyPrefetchGathers
       : gatherLayout.staggeredPrefetchCount;
+  if (
+    label === "prefetch" &&
+    Math.abs(observedPrefetchGathersPerStep - expectedPrefetchGathers) >= 0.5
+  ) {
+    throw new Error(
+      `prefetch Gather schedule ${prefetchGatherSchedule} expects ` +
+      `${expectedPrefetchGathers} calls/step, observed ` +
+      `${observedPrefetchGathersPerStep}`,
+    );
+  }
 
   const stableLayerRecords = stableSteps.flatMap((step, stepIndex) =>
     step.layers.map(layer => ({
@@ -480,6 +537,10 @@ function analyzeParsed(parsed, label) {
     prefetchReleaseLayers = new Set(gatherLayout.predictionSources.flatMap(
       layer => [layer, layer + prefetchGatherBatchSize],
     ));
+  } else if (prefetchGatherSchedule === "prefetch_stream_4_no_bootstrap") {
+    prefetchReleaseLayers = new Set(
+      gatherLayout.predictionSources.map(layer => layer + 1),
+    );
   } else {
     prefetchReleaseLayers = new Set([
       firstGroupedLayer,
@@ -538,17 +599,22 @@ function analyzeParsed(parsed, label) {
     });
   }
 
-  const prefetchComputeEvents = prefetchStream === null
+  const prefetchComputeEvents = prefetchComputeStream === null
     ? []
     : stableEvents.filter(event =>
-      event.tid === prefetchStream &&
+      event.tid === prefetchComputeStream &&
       !MAIN_GATHER.test(event.name) &&
       !/^EVENT_/.test(event.name)
     );
-  const prefetchLookupEvents = prefetchStream === null
+  const prefetchLookupEvents = prefetchComputeStream === null
     ? []
     : stableEvents.filter(event =>
-      event.tid === prefetchStream && LOOKUP.test(event.name)
+      event.tid === prefetchComputeStream && LOOKUP.test(event.name)
+    );
+  const prefetchIndexerEvents = prefetchComputeStream === null
+    ? []
+    : stableEvents.filter(event =>
+      event.tid === prefetchComputeStream && PREFETCH_INDEXER.test(event.name)
     );
 
   const prefetchGatherQuartets = [];
@@ -561,9 +627,13 @@ function analyzeParsed(parsed, label) {
     index += groupSize;
   }
 
+  const sideStreams = new Set([
+    mainGatherStream,
+    prefetchComputeStream,
+    prefetchGatherStream,
+  ].filter(tid => tid !== null));
   const mainOperatorEvents = pattern => stableEvents.filter(event =>
-    event.tid !== prefetchStream &&
-    event.tid !== mainGatherStream &&
+    !sideStreams.has(event.tid) &&
     !MAINTAIN.test(event.name) &&
     pattern.test(event.name)
   );
@@ -580,6 +650,26 @@ function analyzeParsed(parsed, label) {
   const stableMainGatherEvents = mainGatherEvents.filter(event =>
     event.ts >= stableStart && event.ts < stableEnd
   );
+  competition.prefetchIndexer = {
+    againstPrefetchGather: overlapBreakdown(
+      prefetchIndexerEvents,
+      prefetchGatherEvents,
+    ),
+    againstMainGather: overlapBreakdown(
+      prefetchIndexerEvents,
+      stableMainGatherEvents,
+    ),
+  };
+  competition.prefetchLookup = {
+    againstPrefetchGather: overlapBreakdown(
+      prefetchLookupEvents,
+      prefetchGatherEvents,
+    ),
+    againstMainGather: overlapBreakdown(
+      prefetchLookupEvents,
+      stableMainGatherEvents,
+    ),
+  };
   competition.mainGather = {
     againstPrefetchGather: overlapBreakdown(
       stableMainGatherEvents,
@@ -622,11 +712,9 @@ function analyzeParsed(parsed, label) {
     processName: parsed.processNames.get(hardwarePid) ?? "",
     streams: {
       mainGather: mainGatherStream,
-      prefetch: prefetchStream,
-      prefetchCompute: prefetchStream,
-      prefetchGather: prefetchGatherEvents.length > 0
-        ? prefetchGatherEvents[0].tid
-        : null,
+      prefetch: prefetchComputeStream,
+      prefetchCompute: prefetchComputeStream,
+      prefetchGather: prefetchGatherStream,
       maintain: maintainStream?.count > 0 ? maintainStream.tid : null,
       mainCompute: mainComputeStreams,
     },
@@ -664,20 +752,20 @@ function analyzeParsed(parsed, label) {
     },
     stableKeyOperators: {
       mainIndexer: operatorSummary(
-        stableEvents.filter(event => event.tid !== prefetchStream),
+        stableEvents.filter(event => event.tid !== prefetchComputeStream),
         /^LightningIndexer$/,
       ),
       mainLookup: operatorSummary(
-        stableEvents.filter(event => event.tid !== prefetchStream),
+        stableEvents.filter(event => event.tid !== prefetchComputeStream),
         LOOKUP,
       ),
       mainGather: summarize(stableMainGatherEvents.map(event => event.dur)),
-      prefetchIndexer: prefetchStream === null
+      prefetchIndexer: prefetchComputeStream === null
         ? {count: 0}
-        : operatorSummary(stableEvents, PREFETCH_INDEXER, prefetchStream),
-      prefetchLookup: prefetchStream === null
+        : operatorSummary(stableEvents, PREFETCH_INDEXER, prefetchComputeStream),
+      prefetchLookup: prefetchComputeStream === null
         ? {count: 0}
-        : operatorSummary(stableEvents, LOOKUP, prefetchStream),
+        : operatorSummary(stableEvents, LOOKUP, prefetchComputeStream),
       prefetchGather: summarize(prefetchGatherEvents.map(event => event.dur)),
       prefetchGatherQuartet: summarize(prefetchGatherQuartets),
       maintain: operatorSummary(stableEvents, MAINTAIN),
@@ -689,11 +777,9 @@ function analyzeParsed(parsed, label) {
       moeCombine: operatorSummary(stableEvents, /MoeDistributeCombine/),
     },
     prefetch: {
-      active: prefetchStream !== null,
+      active: prefetchComputeStream !== null,
       gatherLayout: prefetchGatherSchedule,
-      gatherStream: prefetchGatherEvents.length > 0
-        ? prefetchGatherEvents[0].tid
-        : null,
+      gatherStream: prefetchGatherStream,
       expectedGathersPerStep: expectedPrefetchGathers,
       observedMainGathersPerStep: summarize(mainGathersPerStep),
       observedPrefetchGathersPerStep: summarize(prefetchGathersPerStep),
@@ -873,6 +959,7 @@ async function main() {
       groupSize,
       firstGroupedLayer,
       tailSteps,
+      forcedPrefetchGatherSchedule,
     },
     base,
     prefetch,

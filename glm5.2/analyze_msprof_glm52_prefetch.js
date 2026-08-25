@@ -77,9 +77,10 @@ for (const file of inputFiles) {
   if (!fs.existsSync(file)) throw new Error(`trace does not exist: ${file}`);
 }
 
-const KEEP = /KvRmsNormRopeCache|InterleaveRope|DynamicQuant|QuantBatchMatmul|MatMul|RmsNorm|ScatterNdUpdate|LightningIndexer|AsuHbmIndexLookup|AsuHbmIndexMaintain|AsuKvGather|SparseFlashAttention|batch_matmul_transpose|MoeGatingTopK|MoeDistributeDispatch|MoeDistributeCombine|GroupedMatmul|EVENT_(?:WAIT|RECORD)/;
+const KEEP = /PrefetchQliFusion|KvRmsNormRopeCache|InterleaveRope|_triton_rope_siso|DynamicQuant|QuantBatchMatmul|MatMul|RmsNorm|aclnnMul_|aclnnAdd_|aclnnIndex|Muls|Adds|Subs|Clamp|Contiguous|Slice|Arange|FloorDiv|GatherV2|ScatterNdUpdate|LightningIndexer|AsuHbmIndexLookup|AsuHbmIndexMaintain|AsuKvGather|SparseFlashAttention|batch_matmul_transpose|MoeGatingTopK|MoeDistributeDispatch|MoeDistributeCombine|GroupedMatmul|EVENT_(?:WAIT|RECORD)/;
 const MAIN_GATHER = /^AsuKvGather$/;
 const PREFETCH_INDEXER = /LightningIndexerHiCached/;
+const PREFETCH_QLI = /^PrefetchQliFusion$/;
 const LOOKUP = /AsuHbmIndexLookup/;
 const MAINTAIN = /AsuHbmIndexMaintain/;
 
@@ -104,6 +105,15 @@ function summarize(values) {
     min: Math.min(...values),
     max: Math.max(...values),
   };
+}
+
+function trimmedAverage(values, ratio = 0.1) {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const trimCount = Math.floor(sorted.length * ratio);
+  const retained = sorted.slice(trimCount, sorted.length - trimCount);
+  return retained.reduce((total, value) => total + value, 0) /
+    retained.length;
 }
 
 function patternCount(events, pattern, tid = null) {
@@ -360,6 +370,65 @@ function operatorSummary(stableEvents, pattern, tids = null) {
       (tidSet === null || tidSet.has(event.tid))
     )
     .map(event => event.dur));
+}
+
+function summarizeByName(events) {
+  const durations = new Map();
+  for (const event of events) {
+    const values = durations.get(event.name) ?? [];
+    values.push(event.dur);
+    durations.set(event.name, values);
+  }
+  return Object.fromEntries(
+    [...durations.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, values]) => [name, summarize(values)]),
+  );
+}
+
+function summarizeComputeChainsToIndexer(events) {
+  const ordered = [...events].sort((left, right) => left.ts - right.ts);
+  const spans = [];
+  const operatorSums = [];
+  const projectionReadySpans = [];
+  const projectionReadyOperatorSums = [];
+  for (let index = 0; index < ordered.length; index++) {
+    if (!PREFETCH_INDEXER.test(ordered[index].name)) continue;
+    let start = index;
+    while (start > 0) {
+      const previous = ordered[start - 1];
+      if (LOOKUP.test(previous.name) || PREFETCH_INDEXER.test(previous.name)) {
+        break;
+      }
+      start--;
+    }
+    const chain = ordered.slice(start, index + 1);
+    if (chain.length === 0) continue;
+    spans.push(
+      ordered[index].ts + ordered[index].dur - chain[0].ts,
+    );
+    operatorSums.push(chain.reduce((total, event) => total + event.dur, 0));
+    const projectionReadyIndex = chain.findLastIndex(event =>
+      PREFETCH_QLI.test(event.name) || /_triton_rope_siso/.test(event.name)
+    );
+    if (projectionReadyIndex >= 0) {
+      const projectionReadyChain = chain.slice(0, projectionReadyIndex + 1);
+      const readyEvent = projectionReadyChain.at(-1);
+      projectionReadySpans.push(
+        readyEvent.ts + readyEvent.dur - projectionReadyChain[0].ts,
+      );
+      projectionReadyOperatorSums.push(projectionReadyChain.reduce(
+        (total, event) => total + event.dur,
+        0,
+      ));
+    }
+  }
+  return {
+    span: summarize(spans),
+    operatorSum: summarize(operatorSums),
+    projectionReadySpan: summarize(projectionReadySpans),
+    projectionReadyOperatorSum: summarize(projectionReadyOperatorSums),
+  };
 }
 
 function overlapBreakdown(events, competingIntervals) {
@@ -725,6 +794,9 @@ function analyzeParsed(parsed, label) {
       completeStepCount: decoded.steps.length,
       stableStepCount: stableSteps.length,
       stableStep: summarize(stableSteps.map(step => step.duration)),
+      stableStepTrimmedAverage: trimmedAverage(
+        stableSteps.map(step => step.duration),
+      ),
       stableLayer: summarize(stableLayerRecords.map(record => record.latency)),
       stableLayerWithoutBoundary: summarize(stableLayerRecords
         .filter(record => record.layer < numLayers - 1)
@@ -763,6 +835,9 @@ function analyzeParsed(parsed, label) {
       prefetchIndexer: prefetchComputeStream === null
         ? {count: 0}
         : operatorSummary(stableEvents, PREFETCH_INDEXER, prefetchComputeStream),
+      prefetchQliFusion: prefetchComputeStream === null
+        ? {count: 0}
+        : operatorSummary(stableEvents, PREFETCH_QLI, prefetchComputeStream),
       prefetchLookup: prefetchComputeStream === null
         ? {count: 0}
         : operatorSummary(stableEvents, LOOKUP, prefetchComputeStream),
@@ -784,6 +859,10 @@ function analyzeParsed(parsed, label) {
       observedMainGathersPerStep: summarize(mainGathersPerStep),
       observedPrefetchGathersPerStep: summarize(prefetchGathersPerStep),
       computeOperator: summarize(prefetchComputeEvents.map(event => event.dur)),
+      computeOperatorByName: summarizeByName(prefetchComputeEvents),
+      computeChainToIndexer: summarizeComputeChainsToIndexer(
+        prefetchComputeEvents,
+      ),
       competition,
     },
   };
@@ -838,6 +917,16 @@ function compareReports(base, prefetch) {
       relativeChange: ratioChange(
         base.decode.stableStep.avg,
         prefetch.decode.stableStep.avg,
+      ),
+    },
+    stableStepTrimmedAverage: {
+      baseAvg: base.decode.stableStepTrimmedAverage,
+      prefetchAvg: prefetch.decode.stableStepTrimmedAverage,
+      delta: prefetch.decode.stableStepTrimmedAverage -
+        base.decode.stableStepTrimmedAverage,
+      relativeChange: ratioChange(
+        base.decode.stableStepTrimmedAverage,
+        prefetch.decode.stableStepTrimmedAverage,
       ),
     },
     stableLayerWithoutBoundary: {
@@ -902,6 +991,7 @@ function printSummary(report) {
   console.log("|---|---:|---:|---:|---:|");
   for (const [name, value] of [
     ["stable decode step", comparison.stableStep],
+    ["stable decode step (10% trimmed)", comparison.stableStepTrimmedAverage],
     ["stable layer (0-76)", comparison.stableLayerWithoutBoundary],
     ["stable 4-layer group (except last)", comparison.stableGroupWithoutBoundary],
     ["prefetch Gather release layer", comparison.stablePrefetchReleaseLayer],

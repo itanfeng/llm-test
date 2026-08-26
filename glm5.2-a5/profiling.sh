@@ -12,4 +12,4 @@ bash examples/dsa_sparse_pd_mock_probe.sh \
     --local-shm \
     --mtp-speculative-tokens 2 \
     --verify-path \
-    --log-dir /data/autotriton/sekd/dsa-sparse-023-eager-mtp/vllm-ascend/examples/log
+    --log-dir "$PWD"

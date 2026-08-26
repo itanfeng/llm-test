@@ -1,0 +1,31 @@
+docker run \
+    --privileged \
+    -itd \
+    -u root \
+    --net=host \
+    --shm-size=128g \
+    --device=/dev/davinci0 \
+    --device=/dev/davinci1 \
+    --device=/dev/davinci2 \
+    --device=/dev/davinci3 \
+    --device=/dev/davinci4 \
+    --device=/dev/davinci5 \
+    --device=/dev/davinci_manager \
+    --device=/dev/devmm_svm \
+    --device=/dev/hisi_hdc \
+    -v /usr/bin/urma_admin:/usr/bin/urma_admin:ro \
+    -v /lib/route.conf:/lib/route.conf:ro \
+    -v /etc/hccl_rootinfo.json:/etc/hccl_rootinfo.json:ro \
+    -v /etc/hccn.conf:/etc/hccn.conf:ro \
+    -v /home:/home \
+    -v /data:/data \
+    -v /usr/local/Ascend/driver/tools/hccn_tool:/usr/local/Ascend/driver/tools/hccn_tool \
+    -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
+    -v /usr/local/dcmi:/usr/local/dcmi \
+    -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+    -v /usr/local/sbin:/usr/local/sbin \
+    -v /etc/ascend_install.info:/etc/ascend_install.info \
+    -v /usr/local/Ascend/driver/topo:/usr/local/Ascend/driver/topo \
+    --name tf-vllm-ascend-v0.23.0 \
+    d700c759f62a \
+    bash

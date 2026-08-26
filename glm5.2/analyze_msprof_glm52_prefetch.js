@@ -386,12 +386,13 @@ function summarizeByName(events) {
   );
 }
 
-function summarizeComputeChainsToIndexer(events) {
+function buildPrefetchComputeWindows(events) {
   const ordered = [...events].sort((left, right) => left.ts - right.ts);
-  const spans = [];
-  const operatorSums = [];
-  const projectionReadySpans = [];
-  const projectionReadyOperatorSums = [];
+  const projection = [];
+  const throughIndexer = [];
+  const projectionOperatorSums = [];
+  const throughIndexerOperatorSums = [];
+  const indexerToLookupSlack = [];
   for (let index = 0; index < ordered.length; index++) {
     if (!PREFETCH_INDEXER.test(ordered[index].name)) continue;
     let start = index;
@@ -404,31 +405,76 @@ function summarizeComputeChainsToIndexer(events) {
     }
     const chain = ordered.slice(start, index + 1);
     if (chain.length === 0) continue;
-    spans.push(
-      ordered[index].ts + ordered[index].dur - chain[0].ts,
+    throughIndexer.push({
+      ts: chain[0].ts,
+      dur: ordered[index].ts + ordered[index].dur - chain[0].ts,
+    });
+    throughIndexerOperatorSums.push(
+      chain.reduce((total, event) => total + event.dur, 0),
     );
-    operatorSums.push(chain.reduce((total, event) => total + event.dur, 0));
     const projectionReadyIndex = chain.findLastIndex(event =>
       PREFETCH_QLI.test(event.name) || /_triton_rope_siso/.test(event.name)
     );
     if (projectionReadyIndex >= 0) {
       const projectionReadyChain = chain.slice(0, projectionReadyIndex + 1);
       const readyEvent = projectionReadyChain.at(-1);
-      projectionReadySpans.push(
-        readyEvent.ts + readyEvent.dur - projectionReadyChain[0].ts,
-      );
-      projectionReadyOperatorSums.push(projectionReadyChain.reduce(
+      projection.push({
+        ts: projectionReadyChain[0].ts,
+        dur: readyEvent.ts + readyEvent.dur - projectionReadyChain[0].ts,
+      });
+      projectionOperatorSums.push(projectionReadyChain.reduce(
         (total, event) => total + event.dur,
         0,
       ));
     }
+    const nextLookup = ordered.slice(index + 1).find(event =>
+      LOOKUP.test(event.name)
+    );
+    if (nextLookup !== undefined) {
+      indexerToLookupSlack.push(
+        nextLookup.ts - (ordered[index].ts + ordered[index].dur),
+      );
+    }
   }
   return {
-    span: summarize(spans),
-    operatorSum: summarize(operatorSums),
-    projectionReadySpan: summarize(projectionReadySpans),
-    projectionReadyOperatorSum: summarize(projectionReadyOperatorSums),
+    projection,
+    throughIndexer,
+    projectionOperatorSums,
+    throughIndexerOperatorSums,
+    indexerToLookupSlack,
   };
+}
+
+function summarizeComputeChainsToIndexer(events) {
+  const windows = buildPrefetchComputeWindows(events);
+  return {
+    span: summarize(windows.throughIndexer.map(event => event.dur)),
+    operatorSum: summarize(windows.throughIndexerOperatorSums),
+    projectionReadySpan: summarize(windows.projection.map(event => event.dur)),
+    projectionReadyOperatorSum: summarize(windows.projectionOperatorSums),
+    indexerToLookupSlack: summarize(windows.indexerToLookupSlack),
+  };
+}
+
+function summarizeNextIntervalSlack(events, followingIntervals) {
+  const orderedIntervals = [...followingIntervals].sort(
+    (left, right) => left.ts - right.ts,
+  );
+  let intervalIndex = 0;
+  const slack = [];
+  for (const event of [...events].sort((left, right) => left.ts - right.ts)) {
+    const eventEnd = event.ts + event.dur;
+    while (
+      intervalIndex < orderedIntervals.length &&
+      orderedIntervals[intervalIndex].ts < eventEnd
+    ) {
+      intervalIndex++;
+    }
+    if (intervalIndex < orderedIntervals.length) {
+      slack.push(orderedIntervals[intervalIndex].ts - eventEnd);
+    }
+  }
+  return summarize(slack);
 }
 
 function overlapBreakdown(events, competingIntervals) {
@@ -685,6 +731,14 @@ function analyzeParsed(parsed, label) {
     : stableEvents.filter(event =>
       event.tid === prefetchComputeStream && PREFETCH_INDEXER.test(event.name)
     );
+  const prefetchQliEvents = prefetchComputeStream === null
+    ? []
+    : stableEvents.filter(event =>
+      event.tid === prefetchComputeStream && PREFETCH_QLI.test(event.name)
+    );
+  const prefetchComputeWindows = buildPrefetchComputeWindows(
+    prefetchComputeEvents,
+  );
 
   const prefetchGatherQuartets = [];
   for (let index = 0; index + groupSize <= prefetchGatherEvents.length;) {
@@ -707,6 +761,8 @@ function analyzeParsed(parsed, label) {
     pattern.test(event.name)
   );
   const competitionPatterns = {
+    mainIndexer: /^LightningIndexer$/,
+    mainLookup: LOOKUP,
     sparseAttention: /^SparseFlashAttention$/,
     attentionMerge: /^batch_matmul_transpose$/,
     moeGating: /^MoeGatingTopK$/,
@@ -759,6 +815,22 @@ function analyzeParsed(parsed, label) {
       againstPrefetchLookup: overlapBreakdown(
         targetEvents,
         prefetchLookupEvents,
+      ),
+      againstPrefetchProjection: overlapBreakdown(
+        targetEvents,
+        prefetchComputeWindows.projection,
+      ),
+      againstPrefetchIndexer: overlapBreakdown(
+        targetEvents,
+        prefetchIndexerEvents,
+      ),
+      againstPrefetchQliFusion: overlapBreakdown(
+        targetEvents,
+        prefetchQliEvents,
+      ),
+      againstPrefetchComputeThroughIndexer: overlapBreakdown(
+        targetEvents,
+        prefetchComputeWindows.throughIndexer,
       ),
     };
   }
@@ -862,6 +934,14 @@ function analyzeParsed(parsed, label) {
       computeOperatorByName: summarizeByName(prefetchComputeEvents),
       computeChainToIndexer: summarizeComputeChainsToIndexer(
         prefetchComputeEvents,
+      ),
+      lookupToFirstGatherSlack: summarizeNextIntervalSlack(
+        prefetchLookupEvents,
+        prefetchGatherEvents,
+      ),
+      indexerToFirstGatherSlack: summarizeNextIntervalSlack(
+        prefetchIndexerEvents,
+        prefetchGatherEvents,
       ),
       competition,
     },

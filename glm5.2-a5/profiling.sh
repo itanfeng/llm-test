@@ -1,6 +1,7 @@
 unset http_proxy
 unset https_proxy
 
+cd ../../vllm-ascend
 VLLM_ASCEND_ENABLE_MLAPO=0 \
 bash examples/dsa_sparse_pd_mock_probe.sh \
     --model /home/g00809126/repos/glm-moe-dsa \

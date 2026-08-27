@@ -26,7 +26,7 @@ docker run \
     -v /usr/local/sbin:/usr/local/sbin \
     -v /etc/ascend_install.info:/etc/ascend_install.info \
     -v /usr/local/Ascend/driver/topo:/usr/local/Ascend/driver/topo \
-    -w /data/autotration/t00869793 \
+    -w /data/autotriton/t00869793 \
     --name tf-vllm-ascend-v0.23.0 \
     d700c759f62a \
     bash

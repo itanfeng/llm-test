@@ -4,12 +4,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 VLLM_ASCEND_DIR="$(cd -- "${SCRIPT_DIR}/../../vllm-ascend" && pwd)"
+MODEL_PATH="${MODEL_PATH:-/home/g00809126/repos/glm-moe-dsa}"
 PREFETCH_MODE="${PREFETCH_MODE:-offload}"
 PREFETCH_TOP_K="${PREFETCH_TOP_K:-2048}"
 
 usage() {
     echo "Usage: $0 [offload|prefetch]" >&2
     echo "Both modes enable offload; prefetch additionally enables hidden-state prefetch." >&2
+    echo "MODEL_PATH selects the model checkpoint; default: /home/g00809126/repos/glm-moe-dsa." >&2
     echo "PREFETCH_MODE may also be set through the environment; default: offload." >&2
     echo "PREFETCH_TOP_K controls the predicted Top-K width; default: 2048." >&2
 }
@@ -59,12 +61,13 @@ unset http_proxy
 unset https_proxy
 
 echo "Profiling offload=enabled, hidden_state_prefetch=${PREFETCH_ENABLED}, prefetch_top_k=${PREFETCH_TOP_K}"
+echo "Model: ${MODEL_PATH}"
 echo "Output: ${OUTPUT_DIR}"
 
 cd "${VLLM_ASCEND_DIR}"
 VLLM_ASCEND_ENABLE_MLAPO=0 \
 bash examples/dsa_sparse_pd_mock_probe.sh \
-    --model /home/g00809126/repos/glm-moe-dsa \
+    --model "${MODEL_PATH}" \
     --host-ip 90.90.93.29 \
     --prefill-device 4 \
     --decode-device 5 \

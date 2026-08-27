@@ -3,5 +3,6 @@ glm5.2-old/pt/
 glm5.1/profiling/
 *.json
 *.DS_store
+.DS_Store
 *.zip
 *.z*

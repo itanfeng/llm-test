@@ -1,0 +1,1 @@
+仔细阅读./scripts/dev/GOAL.md中的任务，并按任务说明执行

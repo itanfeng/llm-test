@@ -15,13 +15,14 @@ DECODE_DEVICE="${DECODE_DEVICE:-3}"
 HOST_IP="${HOST_IP:-90.90.93.29}"
 IFNAME="${IFNAME:-ens6f1}"
 MTP_SPECULATIVE_TOKENS="${MTP_SPECULATIVE_TOKENS:-3}"
-BENCH="${BENCH:-0}"
+# Default workload: 12 concurrent requests using the 64K JSONL prompt.
+BENCH="${BENCH:-1}"
 BENCH_BATCH="${BENCH_BATCH:-12}"
 BENCH_OUTPUT_TOKENS="${BENCH_OUTPUT_TOKENS:-4}"
 BENCH_JSONL="${BENCH_JSONL:-examples/longbench_narrativeqa_64k.jsonl}"
 # Must clear the default JSONL's 66068-token context plus the Decode tail.
 BENCH_MAX_MODEL_LEN="${BENCH_MAX_MODEL_LEN:-66176}"
-BENCH_PROFILE="${BENCH_PROFILE:-0}"
+BENCH_PROFILE="${BENCH_PROFILE:-1}"
 # Default to HiCached; select prefetch_li to use the single-stage indexer.
 PREFETCH_INDEXER="${PREFETCH_INDEXER:-lightning_indexer_hi_cached}"
 COHORT_KVGATHER="${COHORT_KVGATHER:-0}"
@@ -44,13 +45,13 @@ usage() {
     echo "PREFILL_DEVICE=4, DECODE_DEVICE=3, HOST_IP=90.90.93.29, IFNAME=ens6f1 are overridable." >&2
     echo "VLLM_ASCEND_DIR defaults to the sibling vllm-ascend checkout." >&2
     echo "PROBE_SCRIPT is relative to VLLM_ASCEND_DIR, or an absolute path." >&2
-    echo "  Default: examples/dsa_offload_probe.sh; BENCH=1: examples/dsa_offload_probe_hhm.sh." >&2
-    echo "BENCH=1 runs the long-prompt JSONL throughput benchmark (batch=12, output=4)." >&2
+    echo "  Default: examples/dsa_offload_probe_hhm.sh; BENCH=0: examples/dsa_offload_probe.sh." >&2
+    echo "BENCH defaults to 1: long-prompt JSONL workload (batch=12, output=4)." >&2
     echo "  BENCH_JSONL selects the input; the first entry is duplicated BENCH_BATCH times." >&2
-    echo "  Prompt length comes from the JSONL, not BENCH_PROMPT_TOKENS." >&2
+    echo "  The default 64K JSONL has 66068 prompt tokens; its input is used without truncation." >&2
     echo "  BENCH_MAX_MODEL_LEN defaults to 66176; BENCH_OUTPUT_TOKENS defaults to 4." >&2
-    echo "  BENCH_PROFILE=1 enables runtime profiling and verification; default: 0." >&2
-    echo "  Standard probe mode always enables runtime profiling and verification." >&2
+    echo "  BENCH_PROFILE defaults to 1 (runtime profiling and verification); set to 0 for throughput only." >&2
+    echo "  BENCH=0 selects the short synthetic probe and always enables profiling and verification." >&2
     echo "PREFETCH_INDEXER=prefetch_li|lightning_indexer_hi_cached (default: lightning_indexer_hi_cached)." >&2
     echo "  plain and hicached/hi_cached are aliases; maps to prefetch_plain_indexer=true/false." >&2
     echo "  Applies when prefetch is enabled and the Indexer is non-C8." >&2

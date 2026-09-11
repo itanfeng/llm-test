@@ -18,10 +18,12 @@ MTP_SPECULATIVE_TOKENS="${MTP_SPECULATIVE_TOKENS:-3}"
 # Default workload: 12 concurrent requests using the 64K JSONL prompt.
 BENCH="${BENCH:-1}"
 BENCH_BATCH="${BENCH_BATCH:-12}"
-BENCH_OUTPUT_TOKENS="${BENCH_OUTPUT_TOKENS:-4}"
+# Keep requests alive while the other P/D handoffs reach the Decode engine.
+# MTP width (4 queries) is independent of the response length (256 tokens).
+BENCH_OUTPUT_TOKENS="${BENCH_OUTPUT_TOKENS:-16}"
 BENCH_JSONL="${BENCH_JSONL:-examples/longbench_narrativeqa_64k.jsonl}"
 # Must clear the default JSONL's 66068-token context plus the Decode tail.
-BENCH_MAX_MODEL_LEN="${BENCH_MAX_MODEL_LEN:-66176}"
+BENCH_MAX_MODEL_LEN="${BENCH_MAX_MODEL_LEN:-66560}"
 BENCH_PROFILE="${BENCH_PROFILE:-1}"
 # Default to HiCached; select prefetch_li to use the single-stage indexer.
 PREFETCH_INDEXER="${PREFETCH_INDEXER:-lightning_indexer_hi_cached}"
@@ -41,15 +43,16 @@ usage() {
     echo "PREFETCH_TOP_K controls the predicted Top-K width; default: 2048." >&2
     echo "PREFETCH_HI_BLOCK_NUM controls HiCached hi_block_num/topm only; default: 64." >&2
     echo "GPU_MEMORY_UTILIZATION controls the per-engine memory fraction; default: 0.90." >&2
-    echo "MTP_SPECULATIVE_TOKENS defaults to 3 (1 main token + 3 draft tokens); max-tokens=4." >&2
+    echo "MTP_SPECULATIVE_TOKENS defaults to 3 (1 main token + 3 draft tokens per request per step)." >&2
     echo "PREFILL_DEVICE=4, DECODE_DEVICE=3, HOST_IP=90.90.93.29, IFNAME=ens6f1 are overridable." >&2
     echo "VLLM_ASCEND_DIR defaults to the sibling vllm-ascend checkout." >&2
     echo "PROBE_SCRIPT is relative to VLLM_ASCEND_DIR, or an absolute path." >&2
     echo "  Default: examples/dsa_offload_probe_hhm.sh; BENCH=0: examples/dsa_offload_probe.sh." >&2
-    echo "BENCH defaults to 1: long-prompt JSONL workload (batch=12, output=4)." >&2
+    echo "BENCH defaults to 1: long-prompt JSONL workload (batch=12, output=256)." >&2
     echo "  BENCH_JSONL selects the input; the first entry is duplicated BENCH_BATCH times." >&2
     echo "  The default 64K JSONL has 66068 prompt tokens; its input is used without truncation." >&2
-    echo "  BENCH_MAX_MODEL_LEN defaults to 66176; BENCH_OUTPUT_TOKENS defaults to 4." >&2
+    echo "  BENCH_MAX_MODEL_LEN defaults to 66560; BENCH_OUTPUT_TOKENS defaults to 256." >&2
+    echo "  Concurrency is not a fixed scheduler batch; collected indexer shapes are checked after profiling." >&2
     echo "  BENCH_PROFILE defaults to 1 (runtime profiling and verification); set to 0 for throughput only." >&2
     echo "  BENCH=0 selects the short synthetic probe and always enables profiling and verification." >&2
     echo "PREFETCH_INDEXER=prefetch_li|lightning_indexer_hi_cached (default: lightning_indexer_hi_cached)." >&2
@@ -208,6 +211,7 @@ echo "HiCached hi_block_num/topm: ${PREFETCH_HI_BLOCK_NUM} (HiCached only)"
 echo "Benchmark: ${BENCH}; runtime profiling and verification: ${PROFILE_ENABLED}"
 if [[ "${BENCH}" == "1" ]]; then
     echo "Workload: input_jsonl=${BENCH_JSONL}, batch_size=${BENCH_BATCH}, max_model_len=${BENCH_MAX_MODEL_LEN}, max_tokens=${BENCH_OUTPUT_TOKENS}"
+    echo "Target: ${BENCH_BATCH} requests x (1 + ${MTP_SPECULATIVE_TOKENS}) queries; max-tokens is the response length, not the MTP width."
 fi
 echo "Output: ${OUTPUT_DIR}"
 

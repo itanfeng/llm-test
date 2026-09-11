@@ -7,7 +7,7 @@ VLLM_ASCEND_DIR="${VLLM_ASCEND_DIR:-${SCRIPT_DIR}/../../vllm-ascend}"
 MODEL_PATH="${MODEL_PATH:-/data/model/GLM-5.2-w4a4c8-mxfp4-l10}"
 PREFETCH_MODE="${PREFETCH_MODE:-prefetch}"
 PREFETCH_TOP_K="${PREFETCH_TOP_K:-2048}"
-# HiCached coarse block Top-M, passed to the framework through the environment.
+# HiCached coarse block Top-M, passed alongside --prefetch-top-k.
 PREFETCH_HI_BLOCK_NUM="${PREFETCH_HI_BLOCK_NUM:-64}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
 PREFILL_DEVICE="${PREFILL_DEVICE:-4}"
@@ -22,8 +22,8 @@ BENCH_JSONL="${BENCH_JSONL:-examples/longbench_narrativeqa_64k.jsonl}"
 # Must clear the default JSONL's 66068-token context plus the Decode tail.
 BENCH_MAX_MODEL_LEN="${BENCH_MAX_MODEL_LEN:-66176}"
 BENCH_PROFILE="${BENCH_PROFILE:-0}"
-# Non-default indexer settings require a probe that supports their flag.
-PREFETCH_INDEXER="${PREFETCH_INDEXER:-plain}"
+# Default to HiCached; select prefetch_li to use the single-stage indexer.
+PREFETCH_INDEXER="${PREFETCH_INDEXER:-lightning_indexer_hi_cached}"
 COHORT_KVGATHER="${COHORT_KVGATHER:-0}"
 # This checkout implements the JSONL workload in the hhm probe.
 if [[ "${BENCH}" == "1" ]]; then
@@ -38,7 +38,7 @@ usage() {
     echo "MODEL_PATH selects the model checkpoint; default: /data/model/GLM-5.2-w4a4c8-mxfp4-l10." >&2
     echo "PREFETCH_MODE may also be set through the environment; default: prefetch." >&2
     echo "PREFETCH_TOP_K controls the predicted Top-K width; default: 2048." >&2
-    echo "PREFETCH_HI_BLOCK_NUM controls HiCached hi_block_num/topm; default: 64." >&2
+    echo "PREFETCH_HI_BLOCK_NUM controls HiCached hi_block_num/topm only; default: 64." >&2
     echo "GPU_MEMORY_UTILIZATION controls the per-engine memory fraction; default: 0.90." >&2
     echo "MTP_SPECULATIVE_TOKENS defaults to 3 (1 main token + 3 draft tokens); max-tokens=4." >&2
     echo "PREFILL_DEVICE=4, DECODE_DEVICE=3, HOST_IP=90.90.93.29, IFNAME=ens6f1 are overridable." >&2
@@ -51,8 +51,10 @@ usage() {
     echo "  BENCH_MAX_MODEL_LEN defaults to 66176; BENCH_OUTPUT_TOKENS defaults to 4." >&2
     echo "  BENCH_PROFILE=1 enables runtime profiling and verification; default: 0." >&2
     echo "  Standard probe mode always enables runtime profiling and verification." >&2
-    echo "PREFETCH_INDEXER=plain|hicached (default: plain)" >&2
-    echo "  and COHORT_KVGATHER=0 are overridable; optional flags must be supported by the probe." >&2
+    echo "PREFETCH_INDEXER=prefetch_li|lightning_indexer_hi_cached (default: lightning_indexer_hi_cached)." >&2
+    echo "  plain and hicached/hi_cached are aliases; maps to prefetch_plain_indexer=true/false." >&2
+    echo "  Applies when prefetch is enabled and the Indexer is non-C8." >&2
+    echo "COHORT_KVGATHER defaults to 0; set to 1 to enable cohort KV Gather." >&2
     echo "OUTPUT_DIR defaults to profiling-w4/<mode>-<RUN_ID> next to this script." >&2
 }
 
@@ -84,8 +86,12 @@ if ! [[ "${PREFETCH_HI_BLOCK_NUM}" =~ ^[1-9][0-9]*$ ]]; then
     exit 2
 fi
 case "${PREFETCH_INDEXER}" in
-    plain|hicached) ;;
-    *) echo "PREFETCH_INDEXER must be plain or hicached, got ${PREFETCH_INDEXER}" >&2; exit 2 ;;
+    prefetch_li|plain) PREFETCH_INDEXER="prefetch_li" ;;
+    lightning_indexer_hi_cached|hicached|hi_cached) PREFETCH_INDEXER="lightning_indexer_hi_cached" ;;
+    *)
+        echo "PREFETCH_INDEXER must be prefetch_li or lightning_indexer_hi_cached (aliases: plain/hicached/hi_cached), got ${PREFETCH_INDEXER}" >&2
+        exit 2
+        ;;
 esac
 
 case "${PREFETCH_MODE}" in
@@ -100,10 +106,9 @@ case "${PREFETCH_MODE}" in
         PREFETCH_ARGS=(
             --enable-prefetch-with-hidden-states
             --prefetch-top-k "${PREFETCH_TOP_K}"
+            --prefetch-hi-block-num "${PREFETCH_HI_BLOCK_NUM}"
+            --prefetch-indexer "${PREFETCH_INDEXER}"
         )
-        if [[ "${PREFETCH_INDEXER}" == "hicached" ]]; then
-            PREFETCH_ARGS+=(--hicached-prefetch-indexer)
-        fi
         ;;
     *)
         usage
@@ -137,8 +142,9 @@ if [[ "${BENCH}" == "1" ]]; then
     require_probe_flag --input-jsonl
     require_probe_flag --batch-size
 fi
-if [[ "${PREFETCH_MODE}" == "prefetch" && "${PREFETCH_INDEXER}" == "hicached" ]]; then
-    require_probe_flag --hicached-prefetch-indexer
+if [[ "${PREFETCH_MODE}" == "prefetch" ]]; then
+    require_probe_flag --prefetch-indexer
+    require_probe_flag --prefetch-hi-block-num
 fi
 if [[ "${COHORT_KVGATHER}" == "1" ]]; then
     require_probe_flag --enable-cohort-kvgather
@@ -197,7 +203,7 @@ echo "Framework: ${VLLM_ASCEND_DIR}"
 echo "Probe script: ${PROBE_SCRIPT}"
 echo "Devices: prefill=${PREFILL_DEVICE}, decode=${DECODE_DEVICE}; host_ip=${HOST_IP}, ifname=${IFNAME}"
 echo "Prefetch indexer: ${PREFETCH_INDEXER}; cohort KV Gather: ${COHORT_KVGATHER}"
-echo "HiCached hi_block_num/topm: ${PREFETCH_HI_BLOCK_NUM}"
+echo "HiCached hi_block_num/topm: ${PREFETCH_HI_BLOCK_NUM} (HiCached only)"
 echo "Benchmark: ${BENCH}; runtime profiling and verification: ${PROFILE_ENABLED}"
 if [[ "${BENCH}" == "1" ]]; then
     echo "Workload: input_jsonl=${BENCH_JSONL}, batch_size=${BENCH_BATCH}, max_model_len=${BENCH_MAX_MODEL_LEN}, max_tokens=${BENCH_OUTPUT_TOKENS}"
@@ -207,6 +213,5 @@ echo "Output: ${OUTPUT_DIR}"
 cd "${VLLM_ASCEND_DIR}"
 TMPDIR="${TMPDIR:-/data/pip-tmp}" \
 VLLM_ASCEND_ENABLE_MLAPO=0 \
-VLLM_ASCEND_PREFETCH_HI_BLOCK_NUM="${PREFETCH_HI_BLOCK_NUM}" \
 bash "${PROBE_SCRIPT}" \
     "${COMMON_ARGS[@]}"
